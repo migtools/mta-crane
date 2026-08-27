@@ -21,7 +21,7 @@ RUN set -e && \
         fi && \
         echo "Building standalone binary $output (version=${MTA_OPS_VERSION}, commit=${MTA_OPS_GIT_COMMIT})..." && \
         CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -mod=readonly \
-            -ldflags="-X github.com/konveyor/crane/internal/buildinfo.Version=${MTA_OPS_VERSION} -X github.com/konveyor/crane/internal/buildinfo.BuildCommit=${MTA_OPS_GIT_COMMIT}" \
+            -ldflags="-X github.com/konveyor/crane/internal/buildinfo.Version=${MTA_OPS_VERSION} -X github.com/konveyor/crane/internal/buildinfo.BuildCommit=${MTA_OPS_GIT_COMMIT} -X github.com/migtools/pvc-transfer/transport.DefaultRsyncTransferImage=registry.redhat.io/mta/mta-rsync-transfer-rhel9:${MTA_OPS_VERSION} -X github.com/konveyor/crane-lib/state_transfer/transport.DefaultRsyncTransferImage=registry.redhat.io/mta/mta-rsync-transfer-rhel9:${MTA_OPS_VERSION}" \
             -o "/tmp/archives/$output" ./main.go && \
         (cd /tmp/archives && sha256sum "$output" > "$output.sha256"); \
     done && \
