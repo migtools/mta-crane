@@ -3,6 +3,8 @@ package framework
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/konveyor/crane/e2e-tests/utils"
@@ -16,8 +18,8 @@ const (
 
 // RunCranePipeline executes export, transform, and apply in sequence.
 func RunCranePipeline(runner CraneRunner, e ExportOptions, t TransformOptions, a ApplyOptions) error {
-	if (e.ExportDir != t.ExportDir) || (e.ExportDir != a.ExportDir) || (t.TransformDir != a.TransformDir) {
-		return fmt.Errorf("pipeline directory mismatch: export/transform/apply options must agree on shared directories (exportDir, transformDir)")
+	if (e.ExportDir != t.ExportDir) || (t.TransformDir != a.TransformDir) {
+		return fmt.Errorf("pipeline directory mismatch: export/transform options must agree on exportDir; transform/apply options must agree on transformDir")
 	}
 	if err := runner.Export(e); err != nil {
 		return err
@@ -137,6 +139,64 @@ func ApplyOutputToTargetNonAdmin(kubectlTgt KubectlRunner, outputDir string) err
 	return applyOutputManifests(kubectlTgt, outputDir)
 }
 
+// ApplyOutputToTargetWithNamespaceRemap remaps namespace references in
+// output.yaml, creates the target namespace, and applies the result there.
+func ApplyOutputToTargetWithNamespaceRemap(kubectl KubectlRunner, srcNamespace, tgtNamespace, outputDir string) error {
+	remapped, err := remapOutputNamespaces(outputDir, srcNamespace, tgtNamespace)
+	if err != nil {
+		return err
+	}
+	if err := kubectl.CreateNamespace(tgtNamespace); err != nil {
+		return fmt.Errorf("creating target namespace %q: %w", tgtNamespace, err)
+	}
+	if err := kubectl.ApplyYAMLSpec(remapped, tgtNamespace); err != nil {
+		return fmt.Errorf("applying remapped manifests to namespace %q: %w", tgtNamespace, err)
+	}
+	return nil
+}
+
+// ApplyOutputToTargetWithNamespaceRemapNonAdmin validates and applies remapped
+// manifests without creating the target namespace.
+func ApplyOutputToTargetWithNamespaceRemapNonAdmin(kubectl KubectlRunner, srcNamespace, tgtNamespace, outputDir string) error {
+	remapped, err := remapOutputNamespaces(outputDir, srcNamespace, tgtNamespace)
+	if err != nil {
+		return err
+	}
+	if err := kubectl.ApplyYAMLSpec(remapped, tgtNamespace); err != nil {
+		return fmt.Errorf("applying remapped manifests to namespace %q: %w", tgtNamespace, err)
+	}
+	return nil
+}
+
+// VerifyPVCRenameInOutput checks that the rendered output.yaml contains
+// the new PVC name as a claimName value. This verifies the pvc-rename-map
+// transform rewrote the workload's PVC reference.
+func VerifyPVCRenameInOutput(outputDir, newPVCName string) {
+	outputFile := filepath.Join(outputDir, "output.yaml")
+	content, err := os.ReadFile(outputFile)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "failed to read %s", outputFile)
+
+	log.Printf("Checking output.yaml for claimName: %s", newPVCName)
+
+	gomega.Expect(string(content)).To(gomega.ContainSubstring("claimName: "+newPVCName),
+		"output.yaml should contain claimName: %s", newPVCName)
+}
+
+// AssertNoTransferPVCLeftovers waits until transfer-pvc helper objects labeled
+// for pvcName are gone in the given namespaces. DeleteAllOf in transfer-pvc GC
+// is asynchronous, so the rsync-server pod can still be Terminating for a while
+// after the command exits.
+func AssertNoTransferPVCLeftovers(k KubectlRunner, namespaces []string, pvcName string) {
+	selector := "app.konveyor.io/created-for-pvc=" + pvcName
+	for _, ns := range namespaces {
+		gomega.Eventually(func() (string, error) {
+			out, err := k.GetResourceNamesByLabel(ns, selector)
+			return strings.TrimSpace(out), err
+		}, "2m", "5s").Should(gomega.BeEmpty(),
+			"expected no leftover transfer-pvc resources in namespace %s", ns)
+	}
+}
+
 func applyOutputManifests(kubectlTgt KubectlRunner, outputDir string) error {
 	if err := kubectlTgt.ValidateApplyDir(outputDir); err != nil {
 		return err
@@ -145,6 +205,20 @@ func applyOutputManifests(kubectlTgt KubectlRunner, outputDir string) error {
 		return err
 	}
 	return nil
+}
+
+// remapOutputNamespaces loads output.yaml and rewrites namespace references
+// from srcNamespace to tgtNamespace.
+func remapOutputNamespaces(outputDir, srcNamespace, tgtNamespace string) (string, error) {
+	content, err := os.ReadFile(filepath.Join(outputDir, "output.yaml"))
+	if err != nil {
+		return "", fmt.Errorf("reading output.yaml: %w", err)
+	}
+	remapped, err := utils.RemapNamespaceInYAML(content, srcNamespace, tgtNamespace)
+	if err != nil {
+		return "", fmt.Errorf("remapping namespace in output: %w", err)
+	}
+	return remapped, nil
 }
 
 // checkAndLogStageFiles validates stage output exists and logs the file list.

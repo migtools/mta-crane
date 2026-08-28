@@ -34,6 +34,7 @@ type ExportOptions struct {
 	// 2. globalFlags for the args merged with values from the viper config file
 	cobraGlobalFlags *flags.GlobalFlags
 	globalFlags      *flags.GlobalFlags
+	log              *logrus.Logger
 
 	rawConfig              api.Config
 	exportDir              string
@@ -41,6 +42,8 @@ type ExportOptions struct {
 	userSpecifiedNamespace string
 	crdSkipGroups          []string
 	crdIncludeGroups       []string
+	includeGK              []string
+	excludeGK              []string
 	asExtras               string
 	extras                 map[string][]string
 	QPS                    float32
@@ -53,6 +56,8 @@ type ExportOptions struct {
 // Complete loads kubeconfig context, namespace, and parses --as-extras into o.extras.
 func (o *ExportOptions) Complete(c *cobra.Command, args []string) error {
 	var err error
+	o.log = o.globalFlags.GetLoggerOrDefault()
+	log := o.log
 
 	if c != nil {
 		kubeconfigFlag := c.Flags().Lookup("kubeconfig")
@@ -64,11 +69,13 @@ func (o *ExportOptions) Complete(c *cobra.Command, args []string) error {
 
 	o.rawConfig, err = o.configFlags.ToRawKubeConfigLoader().RawConfig()
 	if err != nil {
+		log.Errorf("Failed to load kubeconfig: %v", err)
 		return err
 	}
 
 	o.userSpecifiedNamespace, _, err = o.configFlags.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
+		log.Errorf("Failed to resolve namespace from kubeconfig: %v", err)
 		return err
 	}
 
@@ -77,6 +84,7 @@ func (o *ExportOptions) Complete(c *cobra.Command, args []string) error {
 	if c != nil {
 		if f := c.Flags().Lookup("namespace"); f != nil && f.Changed {
 			if o.configFlags.Namespace != nil && strings.TrimSpace(*o.configFlags.Namespace) == "" {
+				log.Debugf("Namespace flag was set to empty string")
 				return fmt.Errorf("namespace cannot be empty; omit -n/--namespace to use your kubeconfig context default")
 			}
 		}
@@ -88,10 +96,18 @@ func (o *ExportOptions) Complete(c *cobra.Command, args []string) error {
 		for _, keysAndString := range keysAndStrings {
 			keyString := strings.Split(keysAndString, "=")
 			if len(keyString) != 2 {
-				return fmt.Errorf("extra options (%v) formatted incorrectly", o.asExtras)
+				log.Debugf("Invalid --as-extras format at entry %d", len(o.extras)+1)
+				return fmt.Errorf("extra options formatted incorrectly")
 			}
 			o.extras[keyString[0]] = strings.Split(keyString[1], ",")
 		}
+	}
+
+	// Apply default --exclude-gk Event if no GK filters specified
+	// This maintains backward compatibility: Events are skipped by default
+	// Users can override by explicitly using --include-gk Event or --exclude-gk <other-kinds>
+	if len(o.includeGK) == 0 && len(o.excludeGK) == 0 {
+		o.excludeGK = []string{"Event"}
 	}
 
 	return nil
@@ -99,6 +115,8 @@ func (o *ExportOptions) Complete(c *cobra.Command, args []string) error {
 
 // Validate checks flag combinations (e.g. --as-extras requires impersonation).
 func (o *ExportOptions) Validate() error {
+	log := o.globalFlags.GetLoggerOrDefault()
+
 	if o.configFlags.Context != nil && *o.configFlags.Context != "" {
 		for _, f := range []struct {
 			flag string
@@ -110,15 +128,18 @@ func (o *ExportOptions) Validate() error {
 			{"--token", o.configFlags.BearerToken},
 		} {
 			if f.val != nil && *f.val != "" {
+				log.Debugf("Cannot use --context with %s", f.flag)
 				return fmt.Errorf("cannot use --context with %s; it overrides the value defined in the context", f.flag)
 			}
 		}
 	}
 	if o.asExtras != "" && *o.configFlags.Impersonate == "" && len(*o.configFlags.ImpersonateGroup) == 0 {
+		log.Debugf("--as-extras requires specifying a user or group to impersonate")
 		return fmt.Errorf("extras requires specifying a user or group to impersonate")
 	}
 	if o.labelSelector != "" {
 		if _, err := labels.Parse(o.labelSelector); err != nil {
+			log.Debugf("Invalid --label-selector %q: %v", o.labelSelector, err)
 			return fmt.Errorf("invalid --label-selector: %w", err)
 		}
 	}
@@ -129,9 +150,14 @@ func (o *ExportOptions) Validate() error {
 		}
 		for _, g := range o.crdSkipGroups {
 			if includeSet[g] {
+				log.Debugf("CRD group %q appears in both --crd-skip-group and --crd-include-group", g)
 				return fmt.Errorf("CRD group %q appears in both --crd-skip-group and --crd-include-group", g)
 			}
 		}
+	}
+	if _, err := NewGKFilter(o.includeGK, o.excludeGK); err != nil {
+		log.Debugf("Invalid GK filter: %v", err)
+		return err
 	}
 	return nil
 }
@@ -148,7 +174,7 @@ func validateExportNamespace(ctx context.Context, client kubernetes.Interface, n
 		if apierrors.IsNotFound(err) {
 			return fmt.Errorf(`namespaces "%s" not found`, namespace)
 		}
-		log.Warnf("cannot verify namespace %q exists (may lack RBAC permission): %v", namespace, err)
+		log.Warnf("Cannot verify namespace %q exists (may lack RBAC permission): %v", namespace, err)
 	}
 	return nil
 }
@@ -192,11 +218,12 @@ func mergeImpersonationExtras(dest, src map[string][]string) map[string][]string
 func (o *ExportOptions) Run() error {
 	var err error
 
-	log := o.globalFlags.GetLogger()
+	log := o.globalFlags.GetLoggerOrDefault()
+	log.Infof("Starting export for namespace %q", o.userSpecifiedNamespace)
 
 	restConfig, err := o.configFlags.ToRESTConfig()
 	if err != nil {
-		log.Errorf("cannot create rest config: %#v", err)
+		log.Errorf("Cannot create rest config: %v", err)
 		return err
 	}
 
@@ -206,10 +233,11 @@ func (o *ExportOptions) Run() error {
 
 	kubeClient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		log.Errorf("cannot create kubernetes client: %#v", err)
+		log.Errorf("Cannot create kubernetes client: %v", err)
 		return err
 	}
 	if err := validateExportNamespace(context.Background(), kubeClient, o.userSpecifiedNamespace, log); err != nil {
+		log.Errorf("Namespace validation failed for %q: %v", o.userSpecifiedNamespace, err)
 		return err
 	}
 
@@ -218,24 +246,24 @@ func (o *ExportOptions) Run() error {
 			return fmt.Errorf("export directory %q already exists; use --overwrite to replace it", o.exportDir)
 		}
 		if err = os.RemoveAll(o.exportDir); err != nil {
-			log.Errorf("error clearing export directory: %#v", err)
+			log.Errorf("Error clearing export directory: %v", err)
 			return err
 		}
 	}
 	resourceDir := filepath.Join(o.exportDir, "resources", o.userSpecifiedNamespace)
 	if err = os.MkdirAll(resourceDir, 0700); err != nil {
-		log.Errorf("error creating the resources directory: %#v", err)
+		log.Errorf("Error creating the resources directory: %v", err)
 		return err
 	}
 	failuresDir := filepath.Join(o.exportDir, "failures", o.userSpecifiedNamespace)
 	if err = os.MkdirAll(failuresDir, 0700); err != nil {
-		log.Errorf("error creating the failures directory: %#v", err)
+		log.Errorf("Error creating the failures directory: %v", err)
 		return err
 	}
 
 	discoveryClient, err := o.configFlags.ToDiscoveryClient()
 	if err != nil {
-		log.Errorf("cannot create discovery client: %#v", err)
+		log.Errorf("Cannot create discovery client: %v", err)
 		return err
 	}
 
@@ -244,7 +272,7 @@ func (o *ExportOptions) Run() error {
 
 	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
-		log.Errorf("cannot create dynamic client: %#v", err)
+		log.Errorf("Cannot create dynamic client: %v", err)
 		return err
 	}
 
@@ -252,15 +280,24 @@ func (o *ExportOptions) Run() error {
 	if err != nil {
 		return err
 	}
+	log.Debugf("Discovered %d API resource lists", len(resourceLists))
 
 	var errs []error
 
 	// Pass restConfig.Timeout to child functions for per-request timeout enforcement
 	requestTimeout := restConfig.Timeout
 
-	resources, resourceErrs := resourceToExtract(requestTimeout, o.userSpecifiedNamespace, o.labelSelector, dynamicClient, resourceLists, log)
+	gkFilter, err := NewGKFilter(o.includeGK, o.excludeGK)
+	if err != nil {
+		log.Errorf("Failed to create GK filter: %v", err)
+		return err
+	}
+
+	resources, resourceErrs := resourceToExtract(requestTimeout, o.userSpecifiedNamespace, o.labelSelector, gkFilter, dynamicClient, resourceLists, log)
+	log.Debugf("Extracted %d resources (%d errors)", len(resources), len(resourceErrs))
 	clusterScopeHandler := NewClusterScopeHandler()
 	resources = clusterScopeHandler.filterRbacResources(resources, log)
+	log.Debugf("Resources after RBAC filter: %d", len(resources))
 
 	clusterResourceDir := filepath.Join(o.exportDir, "resources", o.userSpecifiedNamespace, "_cluster")
 
@@ -273,6 +310,7 @@ func (o *ExportOptions) Run() error {
 	for _, resErr := range resourceErrs {
 		if resErr != nil && resErr.Error != nil {
 			if apierrors.IsTimeout(resErr.Error) || strings.Contains(resErr.Error.Error(), "context deadline exceeded") {
+				log.Errorf("Timeout listing resource %q: %v", resErr.APIResource.Kind, resErr.Error)
 				return resErr.Error
 			}
 		}
@@ -280,34 +318,39 @@ func (o *ExportOptions) Run() error {
 
 	// After merging CRDs: prepare _cluster so hasClusterScopedManifests sees cluster-scoped CRD objects.
 	if err = prepareClusterResourceDir(clusterResourceDir, resources); err != nil {
-		log.Errorf("error preparing cluster resources directory: %#v", err)
+		log.Errorf("Error preparing cluster resources directory: %v", err)
 		return err
 	}
 
 	//count and log the no of crds
 	crdCount := len(crdResources)
 	if crdCount > 0 {
-		log.Infof("Exported %d CRDs for referenced custom resources to the _cluster resources directory\n", crdCount)
+		log.Infof("Collected %d CRDs for referenced custom resources", crdCount)
 	}
 
-	log.Debugf("attempting to write resources to files\n")
 	writeResourcesErrors := writeResources(resources, clusterResourceDir, resourceDir, log)
 	for _, e := range writeResourcesErrors {
-		log.Warnf("error writing manifests to file: %#v, ignoring\n", e)
+		log.Warnf("Error writing manifests to file: %v, continuing", e)
 	}
 
 	writeErrorsErrors := writeErrors(resourceErrs, failuresDir, log)
 	for _, e := range writeErrorsErrors {
-		log.Warnf("error writing errors to file: %#v, ignoring\n", e)
+		log.Warnf("Error writing errors to file: %v, continuing", e)
 	}
 
 	errs = append(errs, writeResourcesErrors...)
 	errs = append(errs, writeErrorsErrors...)
 	if allResourceListsForbidden(resources, resourceErrs) {
+		log.Warnf("All resource types returned Forbidden for namespace %q", o.userSpecifiedNamespace)
 		errs = append(errs, fmt.Errorf(
 			"all resource types returned Forbidden for namespace %q -- verify the namespace exists and your user has list permissions",
 			o.userSpecifiedNamespace,
 		))
+	}
+	if len(errs) > 0 {
+		log.Warnf("Export completed with %d error(s) for namespace %q", len(errs), o.userSpecifiedNamespace)
+	} else {
+		log.Infof("Export complete for namespace %q", o.userSpecifiedNamespace)
 	}
 	return errorsutil.NewAggregate(errs)
 }
@@ -353,6 +396,8 @@ func NewExportCommand(streams genericclioptions.IOStreams, f *flags.GlobalFlags)
 	cmd.Flags().StringVarP(&o.labelSelector, "label-selector", "l", "", "Restrict export to resources matching a label selector")
 	cmd.Flags().StringSliceVar(&o.crdSkipGroups, "crd-skip-group", nil, "Additional API groups to skip for CRD export (repeatable)")
 	cmd.Flags().StringSliceVar(&o.crdIncludeGroups, "crd-include-group", nil, "API groups to force-include for CRD export, even if default-built-in (repeatable)")
+	cmd.Flags().StringSliceVar(&o.includeGK, "include-gk", nil, "Only export namespace resources matching the specified Group/Kind (repeatable, format: \"Kind\" or \"Group/Kind\")")
+	cmd.Flags().StringSliceVar(&o.excludeGK, "exclude-gk", nil, "Skip namespace resources matching the specified Group/Kind (repeatable, format: \"Kind\" or \"Group/Kind\")")
 	cmd.Flags().StringVar(&o.asExtras, "as-extras", "", "The extra info for impersonation can only be used with User or Group but is not required. An example is --as-extras key=string1,string2;key2=string3")
 	cmd.Flags().Float32VarP(&o.QPS, "qps", "q", 100, "Query Per Second Rate.")
 	cmd.Flags().IntVarP(&o.Burst, "burst", "b", 1000, "API Burst Rate.")

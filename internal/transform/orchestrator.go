@@ -19,6 +19,14 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// StageArtifact wraps a transform artifact with crane-local routing metadata.
+// IsNewResource tells the writer to place this artifact in the new/ directory
+// instead of input/, without polluting the resource with temporary annotations.
+type StageArtifact struct {
+	cranelib.TransformArtifact
+	IsNewResource bool
+}
+
 // Orchestrator coordinates multi-stage transform execution
 type Orchestrator struct {
 	Log            *logrus.Logger
@@ -27,7 +35,8 @@ type Orchestrator struct {
 	PluginDir      string
 	SkipPlugins    []string
 	OptionalFlags  map[string]string
-	Force          bool
+	StageOptionalFlags map[string]map[string]string
+	Overwrite      bool
 	CraneVersion   string
 	// NewlyCreatedStages tracks stages created in this run that can be overwritten
 	// This prevents double-write errors when creating a stage and then running it
@@ -36,12 +45,55 @@ type Orchestrator struct {
 	KustomizeArgs []string
 }
 
+func (o *Orchestrator) validateStageOptionalFlags(stages []Stage) error {
+	if len(o.StageOptionalFlags) == 0 {
+		return nil
+	}
+	known := make(map[string]bool, len(stages))
+	for _, s := range stages {
+		known[s.PluginName] = true
+	}
+	for name := range o.StageOptionalFlags {
+		if !known[name] {
+			names := make([]string, len(stages))
+			for i, s := range stages {
+				names[i] = s.PluginName
+			}
+			o.Log.Debugf("Per-stage optionals reference unknown stage %q (known stages: %s)", name, strings.Join(names, ", "))
+			return fmt.Errorf("per-stage optionals reference unknown stage %q (known stages: %s)", name, strings.Join(names, ", "))
+		}
+	}
+	return nil
+}
+
+func (o *Orchestrator) resolveOptionalFlags(stage Stage) map[string]string {
+	if o.StageOptionalFlags == nil {
+		return o.OptionalFlags
+	}
+	stageFlags, ok := o.StageOptionalFlags[stage.PluginName]
+	if !ok {
+		return o.OptionalFlags
+	}
+	if len(o.OptionalFlags) == 0 {
+		return stageFlags
+	}
+	merged := make(map[string]string, len(o.OptionalFlags)+len(stageFlags))
+	for k, v := range o.OptionalFlags {
+		merged[k] = v
+	}
+	for k, v := range stageFlags {
+		merged[k] = v
+	}
+	return merged
+}
+
 // RunMultiStage executes transform with multi-stage pipeline
 // Each stage runs on the fully applied output of the previous stage
 func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 	// Load all plugins once at the start
 	allPlugins, err := plugin.GetFilteredPlugins(o.PluginDir, o.SkipPlugins, o.Log)
 	if err != nil {
+		o.Log.Debugf("Failed to load plugins: %v", err)
 		return fmt.Errorf("failed to load plugins: %w", err)
 	}
 	o.Log.Debugf("Loaded %d plugin(s)", len(allPlugins))
@@ -49,6 +101,7 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 	// Discover all stages
 	stages, err := DiscoverStages(o.TransformDir)
 	if err != nil {
+		o.Log.Debugf("Failed to discover stages in %s: %v", o.TransformDir, err)
 		return fmt.Errorf("failed to discover stages: %w", err)
 	}
 
@@ -56,7 +109,13 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 	selectedStages := FilterStages(stages, stageSelector)
 
 	if len(selectedStages) == 0 {
+		o.Log.Debugf("No stages found matching selector in %s", o.TransformDir)
 		return fmt.Errorf("no stages found matching selector")
+	}
+
+	if err := o.validateStageOptionalFlags(selectedStages); err != nil {
+		o.Log.Errorf("Invalid stage optional flags: %v", err)
+		return err
 	}
 
 	opts := file.PathOpts{
@@ -81,6 +140,7 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 
 				// Verify previous stage output exists
 				if _, err := os.Stat(inputDir); os.IsNotExist(err) {
+					o.Log.Debugf("Stage %s: output directory from stage %s does not exist: %s", stage.DirName, prevStage.DirName, inputDir)
 					return fmt.Errorf("stage %s requires output from stage %s, but output directory does not exist: %s",
 						stage.DirName, prevStage.DirName, inputDir)
 				}
@@ -97,6 +157,7 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 
 			// Verify previous stage output exists
 			if _, err := os.Stat(inputDir); os.IsNotExist(err) {
+				o.Log.Debugf("Stage %s: output directory from stage %s does not exist: %s", stage.DirName, prevStage.DirName, inputDir)
 				return fmt.Errorf("stage %s requires output from stage %s, but output directory does not exist: %s",
 					stage.DirName, prevStage.DirName, inputDir)
 			}
@@ -105,6 +166,7 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 		// Step 2: Load input resources
 		inputResources, err := o.loadResourcesFromDirectory(inputDir)
 		if err != nil {
+			o.Log.Debugf("Stage %s: failed to load input resources from %s: %v", stage.DirName, inputDir, err)
 			return fmt.Errorf("stage %s: failed to load input resources from %s: %w", stage.DirName, inputDir, err)
 		}
 
@@ -113,6 +175,7 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 		// Step 3: Execute transform for this stage (generates transform artifacts)
 		// Note: Input resources will be written to input/ directory by executeStage via writer
 		if err := o.executeStage(stage, inputResources, allPlugins); err != nil {
+			o.Log.Debugf("Stage %s: transform execution failed: %v", stage.DirName, err)
 			return fmt.Errorf("stage %s: transform execution failed: %w", stage.DirName, err)
 		}
 
@@ -120,6 +183,7 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 		stageTransformDir := opts.GetStageTransformDir(stage.DirName)
 		outputResources, err := o.applyStageTransforms(stageTransformDir)
 		if err != nil {
+			o.Log.Debugf("Stage %s: failed to apply transforms: %v", stage.DirName, err)
 			return fmt.Errorf("stage %s: failed to apply transforms: %w", stage.DirName, err)
 		}
 
@@ -128,6 +192,7 @@ func (o *Orchestrator) RunMultiStage(stageSelector StageSelector) error {
 		// Step 5: Write output (becomes input for next stage)
 		stageOutputDir := opts.GetStageOutputDir(stage.DirName)
 		if err := o.writeResourcesToDirectory(outputResources, stageOutputDir); err != nil {
+			o.Log.Debugf("Stage %s: failed to write output: %v", stage.DirName, err)
 			return fmt.Errorf("stage %s: failed to write output: %w", stage.DirName, err)
 		}
 
@@ -143,12 +208,14 @@ func (o *Orchestrator) executeStage(stage Stage, inputResources []unstructured.U
 	// Get the plugin for this stage (if any)
 	stagePlugin, err := o.getPluginForStage(stage, allPlugins)
 	if err != nil {
+		o.Log.Errorf("Stage %s: failed to get plugin: %v", stage.DirName, err)
 		return err
 	}
 
 	// Transform all resources through the plugin (or pass-through if no plugin)
 	artifacts, err := o.transformResources(stage, stagePlugin, inputResources)
 	if err != nil {
+		o.Log.Errorf("Stage %s: failed to transform resources: %v", stage.DirName, err)
 		return err
 	}
 
@@ -159,30 +226,26 @@ func (o *Orchestrator) executeStage(stage Stage, inputResources []unstructured.U
 	}
 
 	// Determine write behavior based on stage type
-	// Plugin stages: always allow overwrite (auto-regenerate)
-	// Custom stages: require --force flag
-	// Newly created stages: always allow overwrite
+	// Newly created stages: always allow overwrite (just created, safe to populate)
+	// All other stages: respect --overwrite flag
 	var forceWrite bool
 	if o.NewlyCreatedStages != nil && o.NewlyCreatedStages[stage.DirName] {
 		// Stage was just created in this run: safe to populate
 		forceWrite = true
 		o.Log.Debugf("Stage %s: allowing write (newly created in this run)", stage.DirName)
-	} else if strings.HasSuffix(stage.PluginName, "Plugin") {
-		// Plugin-based stage: automatically regenerate
-		forceWrite = true
-		o.Log.Debugf("Stage %s: allowing write (plugin-based stage auto-regeneration)", stage.DirName)
 	} else {
-		// Custom stage: respect --force flag
-		forceWrite = o.Force
+		// All stages (plugin and custom): respect --overwrite flag
+		forceWrite = o.Overwrite
 		if forceWrite {
-			o.Log.Debugf("Stage %s: allowing write (--force flag for custom stage)", stage.DirName)
+			o.Log.Debugf("Stage %s: allowing write (--overwrite flag set)", stage.DirName)
 		} else {
-			o.Log.Debugf("Stage %s: checking for empty directory (custom stage without --force)", stage.DirName)
+			o.Log.Debugf("Stage %s: checking for empty directory (no --overwrite flag)", stage.DirName)
 		}
 	}
 
 	writer := NewKustomizeWriter(opts, stage.DirName, o.Log)
 	if err := writer.WriteStage(artifacts, forceWrite); err != nil {
+		o.Log.Errorf("Stage %s: failed to write stage: %v", stage.DirName, err)
 		return err
 	}
 
@@ -190,8 +253,8 @@ func (o *Orchestrator) executeStage(stage Stage, inputResources []unstructured.U
 }
 
 // transformResources runs the plugin (if any) on all input resources
-// Returns transform artifacts ready to be written to the stage directory
-func (o *Orchestrator) transformResources(stage Stage, stagePlugin cranelib.Plugin, inputResources []unstructured.Unstructured) ([]cranelib.TransformArtifact, error) {
+// Returns stage artifacts ready to be written to the stage directory
+func (o *Orchestrator) transformResources(stage Stage, stagePlugin cranelib.Plugin, inputResources []unstructured.Unstructured) ([]StageArtifact, error) {
 	// Build plugins list for runner (0 or 1 plugin)
 	// Note: Runner.Run expects a slice, even though we only pass 0 or 1 plugin
 	var plugins []cranelib.Plugin
@@ -204,15 +267,16 @@ func (o *Orchestrator) transformResources(stage Stage, stagePlugin cranelib.Plug
 	runner := cranelib.Runner{
 		Log:              o.Log,
 		PluginPriorities: nil, // No priorities needed - max 1 plugin per stage
-		OptionalFlags:    o.OptionalFlags,
+		OptionalFlags:    o.resolveOptionalFlags(stage),
 	}
 
-	var artifacts []cranelib.TransformArtifact
+	var artifacts []StageArtifact
 
 	for _, resource := range inputResources {
 		response, err := runner.Run(resource, plugins)
 		if err != nil {
 			resourceID := o.formatResourceID(resource)
+			o.Log.Debugf("Stage %s: failed to run transform for %s: %v", stage.DirName, resourceID, err)
 			return nil, fmt.Errorf("stage %s: failed to run transform for %s: %w", stage.DirName, resourceID, err)
 		}
 
@@ -222,20 +286,62 @@ func (o *Orchestrator) transformResources(stage Stage, stagePlugin cranelib.Plug
 			patches, err = jsonpatch.DecodePatch(response.TransformFile)
 			if err != nil {
 				resourceID := o.formatResourceID(resource)
+				o.Log.Debugf("Stage %s: failed to decode patches for %s: %v", stage.DirName, resourceID, err)
 				return nil, fmt.Errorf("stage %s: failed to decode patches for %s: %w", stage.DirName, resourceID, err)
 			}
 		}
 
-		artifact := cranelib.TransformArtifact{
-			Resource:     resource,
-			HaveWhiteOut: response.HaveWhiteOut,
-			Patches:      patches,
-			IgnoredOps:   []cranelib.IgnoredOperation{}, // TODO: Parse IgnoredPatches
-			Target:       cranelib.DeriveTargetFromResource(resource),
-			PluginName:   stage.PluginName,
+		artifact := StageArtifact{
+			TransformArtifact: cranelib.TransformArtifact{
+				Resource:     resource,
+				HaveWhiteOut: response.HaveWhiteOut,
+				Patches:      patches,
+				IgnoredOps:   []cranelib.IgnoredOperation{}, // TODO: Parse IgnoredPatches
+				Target:       cranelib.DeriveTargetFromResource(resource),
+				PluginName:   stage.PluginName,
+			},
 		}
 
 		artifacts = append(artifacts, artifact)
+
+		// Process new resources generated by the plugin
+		for i, newResource := range response.NewResources {
+			if newResource.GetKind() == "" {
+				o.Log.Debugf("Stage %s: new resource #%d missing kind", stage.DirName, i)
+				return nil, fmt.Errorf("stage %s: new resource #%d missing kind", stage.DirName, i)
+			}
+			if newResource.GetName() == "" {
+				o.Log.Debugf("Stage %s: new resource #%d (%s) missing name", stage.DirName, i, newResource.GetKind())
+				return nil, fmt.Errorf("stage %s: new resource #%d (%s) missing name", stage.DirName, i, newResource.GetKind())
+			}
+			if newResource.GetAPIVersion() == "" {
+				o.Log.Debugf("Stage %s: new resource #%d (%s/%s) missing apiVersion", stage.DirName, i, newResource.GetKind(), newResource.GetName())
+				return nil, fmt.Errorf("stage %s: new resource #%d (%s/%s) missing apiVersion", stage.DirName, i, newResource.GetKind(), newResource.GetName())
+			}
+
+			skeleton, newPatch, err := cranelib.SplitNewResourceToSkeletonAndPatch(newResource)
+			if err != nil {
+				o.Log.Debugf("Stage %s: failed to split new resource %s/%s: %v", stage.DirName, newResource.GetKind(), newResource.GetName(), err)
+				return nil, fmt.Errorf("stage %s: failed to split new resource %s/%s: %w",
+					stage.DirName, newResource.GetKind(), newResource.GetName(), err)
+			}
+
+			newArtifact := StageArtifact{
+				TransformArtifact: cranelib.TransformArtifact{
+					Resource:     skeleton,
+					HaveWhiteOut: false,
+					Patches:      newPatch,
+					IgnoredOps:   []cranelib.IgnoredOperation{},
+					Target:       cranelib.DeriveTargetFromResource(skeleton),
+					PluginName:   stage.PluginName,
+				},
+				IsNewResource: true,
+			}
+			artifacts = append(artifacts, newArtifact)
+
+			o.Log.Infof("Stage %s: plugin generated new resource: %s/%s/%s",
+				stage.DirName, newResource.GetKind(), newResource.GetNamespace(), newResource.GetName())
+		}
 	}
 
 	return artifacts, nil
@@ -261,6 +367,7 @@ func (o *Orchestrator) getPluginForStage(stage Stage, allPlugins []cranelib.Plug
 
 	// Validate: if stage name ends with "Plugin", the plugin must exist
 	if strings.HasSuffix(stage.PluginName, "Plugin") && stagePlugin == nil {
+		o.Log.Debugf("Stage %s: plugin %s not found (available: %s)", stage.DirName, stage.PluginName, o.getAvailablePluginNames(allPlugins))
 		return nil, fmt.Errorf("stage %s requires plugin '%s' but it was not found (available plugins: %s). Stage names ending with 'Plugin' must have a corresponding plugin installed",
 			stage.DirName, stage.PluginName, o.getAvailablePluginNames(allPlugins))
 	}
@@ -297,12 +404,14 @@ func (o *Orchestrator) applyStageTransforms(stageDir string) ([]unstructured.Uns
 
 	output, err := runner.Build(stageDir)
 	if err != nil {
+		o.Log.Debugf("Kustomize build failed for stage directory %s: %v", stageDir, err)
 		return nil, fmt.Errorf("kustomize build failed for stage directory %s: %w", stageDir, err)
 	}
 
 	// Check if kustomize produced any output
 	// Empty output means the stage has no resources to transform
 	if len(output) == 0 {
+		o.Log.Debugf("Stage directory %s produced no resources to transform", stageDir)
 		return nil, fmt.Errorf("stage produced no resources to transform.\n"+
 			"This can happen when:\n"+
 			"  - The stage received no input resources\n"+
@@ -323,29 +432,34 @@ func (o *Orchestrator) applyStageTransforms(stageDir string) ([]unstructured.Uns
 			break
 		}
 		if err != nil {
+			o.Log.Debugf("Failed to decode YAML document from stage %s: %v", stageDir, err)
 			return nil, fmt.Errorf("failed to decode YAML document: %w", err)
 		}
 
 		// Skip empty documents
 		if doc == nil {
+			o.Log.Debugf("Skipping empty YAML document in stage %s", stageDir)
 			continue
 		}
 
 		// Convert the decoded document back to YAML bytes, then to JSON
 		docBytes, err := yamlv3.Marshal(doc)
 		if err != nil {
+			o.Log.Debugf("Failed to marshal YAML document from stage %s: %v", stageDir, err)
 			return nil, fmt.Errorf("failed to marshal YAML document: %w", err)
 		}
 
 		// Convert YAML to JSON
 		jsonData, err := yaml.YAMLToJSON(docBytes)
 		if err != nil {
+			o.Log.Debugf("Failed to convert YAML to JSON in stage %s: %v", stageDir, err)
 			return nil, fmt.Errorf("failed to convert YAML to JSON: %w", err)
 		}
 
 		// Unmarshal into unstructured
 		u := unstructured.Unstructured{}
 		if err := u.UnmarshalJSON(jsonData); err != nil {
+			o.Log.Debugf("Failed to unmarshal resource in stage %s: %v", stageDir, err)
 			return nil, fmt.Errorf("failed to unmarshal resource: %w", err)
 		}
 
@@ -359,6 +473,7 @@ func (o *Orchestrator) applyStageTransforms(stageDir string) ([]unstructured.Uns
 func (o *Orchestrator) loadResourcesFromDirectory(dir string) ([]unstructured.Unstructured, error) {
 	files, err := file.ReadFiles(context.TODO(), dir)
 	if err != nil {
+		o.Log.Debugf("Failed to read directory %s: %v", dir, err)
 		return nil, fmt.Errorf("failed to read directory %s: %w", dir, err)
 	}
 
@@ -374,10 +489,12 @@ func (o *Orchestrator) loadResourcesFromDirectory(dir string) ([]unstructured.Un
 func (o *Orchestrator) writeResourcesToDirectory(resources []unstructured.Unstructured, outputDir string) error {
 	// Clear output directory if it exists
 	if err := os.RemoveAll(outputDir); err != nil && !os.IsNotExist(err) {
+		o.Log.Debugf("Failed to remove existing output directory %s: %v", outputDir, err)
 		return fmt.Errorf("failed to remove existing output directory: %w", err)
 	}
 
 	if err := os.MkdirAll(outputDir, 0700); err != nil {
+		o.Log.Debugf("Failed to create output directory %s: %v", outputDir, err)
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
@@ -401,6 +518,7 @@ func (o *Orchestrator) writeResourcesToDirectory(resources []unstructured.Unstru
 		}
 
 		if err := os.MkdirAll(resourceDir, 0700); err != nil {
+			o.Log.Debugf("Failed to create resource directory %s: %v", resourceDir, err)
 			return fmt.Errorf("failed to create resource directory: %w", err)
 		}
 
@@ -411,10 +529,12 @@ func (o *Orchestrator) writeResourcesToDirectory(resources []unstructured.Unstru
 		// Marshal resource to YAML
 		yamlBytes, err := yaml.Marshal(resource.Object)
 		if err != nil {
+			o.Log.Debugf("Failed to marshal resource %s to YAML: %v", filename, err)
 			return fmt.Errorf("failed to marshal resource to YAML: %w", err)
 		}
 
 		if err := os.WriteFile(filePath, yamlBytes, 0644); err != nil {
+			o.Log.Debugf("Failed to write resource file %s: %v", filePath, err)
 			return fmt.Errorf("failed to write resource file: %w", err)
 		}
 

@@ -198,6 +198,18 @@ var dryRunKnownOCPErrors = []string{
 	"no matches for kind",
 }
 
+// dryRunRBACEscalationMarkers are the two substrings that, together on one
+// error line, identify the upstream kubectl/kube-apiserver limitation tracked
+// at https://github.com/kubernetes/kubectl/issues/1575: a server-side dry-run
+// never persists objects, so when a RoleBinding/ClusterRoleBinding is applied
+// in the same batch as the Role/ClusterRole it references, the RBAC
+// no-escalation admission check can't resolve the roleRef (it was only
+// dry-run "created", not actually written) and fails with a NotFound error
+// even though a real apply — where the referent is genuinely persisted first —
+// succeeds. This only fires for non-admin actors, since a cluster-admin
+// bypasses the escalation check entirely.
+var dryRunRBACEscalationMarkers = []string{"rbac.authorization.k8s.io", "not found"}
+
 // isDryRunOCPNoise returns true when the error output from a dry-run only
 // contains lines that are known OCP admission noise, meaning every failing line
 // can be attributed to one of the known patterns above.
@@ -221,6 +233,15 @@ func isDryRunOCPNoise(output string) bool {
 			}
 		}
 		if !matched {
+			matched = true
+			for _, marker := range dryRunRBACEscalationMarkers {
+				if !strings.Contains(lower, marker) {
+					matched = false
+					break
+				}
+			}
+		}
+		if !matched {
 			// At least one error line is not a known OCP noise pattern — treat
 			// the whole dry-run as a genuine failure.
 			return false
@@ -233,9 +254,14 @@ func isDryRunOCPNoise(output string) bool {
 //
 // On OCP, admission webhooks and SCC validation routinely reject dry-run
 // requests that would succeed on the actual apply path (because SCCs, SAs, and
-// webhooks behave differently during dry-run). When the dry-run fails but every
-// error line matches a known OCP noise pattern, the failure is logged as a
-// warning and the function returns nil so the test can proceed to the real apply.
+// webhooks behave differently during dry-run). The same is true, on any
+// cluster, for RBAC objects applied as a non-admin actor: dry-run never
+// persists a Role/ClusterRole, so a RoleBinding/ClusterRoleBinding referencing
+// one created earlier in the same batch fails the no-escalation check with a
+// spurious NotFound (see dryRunRBACEscalationMarkers). When the dry-run fails
+// but every error line matches a known noise pattern, the failure is logged as
+// a warning and the function returns nil so the test can proceed to the real
+// apply.
 func (k KubectlRunner) ValidateApplyDir(dir string) error {
 	args := []string{"apply", "-R", "-f", dir, "--dry-run=server"}
 	if k.Context != "" {
@@ -338,6 +364,21 @@ func (k KubectlRunner) ScaleDeploymentIfPresent(ns, appName string, replicas int
 		return nil
 	}
 	return k.ScaleDeployment(ns, appName, replicas)
+}
+
+// GetResourceNamesByLabel returns resource names matching a label selector.
+// On OpenShift, Routes are included alongside pods, services, secrets,
+// configmaps, and ingresses.
+func (k KubectlRunner) GetResourceNamesByLabel(namespace, labelSelector string) (string, error) {
+	kinds := "pods,services,secrets,configmaps,ingresses"
+	if k.IsOpenShift() {
+		kinds += ",routes.route.openshift.io"
+	}
+	out, err := k.Run("get", kinds, "-n", namespace, "-l", labelSelector, "-o", "name")
+	if err != nil {
+		return "", fmt.Errorf("get resources by label failed (kinds=%q namespace=%q labelSelector=%q): %w", kinds, namespace, labelSelector, err)
+	}
+	return StripKubectlWarnings(out), nil
 }
 
 func (k KubectlRunner) CanI(verb, resource, namespace string) (bool, error) {
