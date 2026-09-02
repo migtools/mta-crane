@@ -20,6 +20,19 @@ const (
 	PkgPluginDir          = "/usr/share/crane/plugins"
 )
 
+type builtInPlugin struct {
+	plugin           transform.Plugin
+	enabledByDefault bool
+}
+
+func getBuiltInPlugins(logger *logrus.Logger) []builtInPlugin {
+	return []builtInPlugin{
+		{plugin: &kubernetes.KubernetesTransformPlugin{}, enabledByDefault: true},
+		{plugin: &openshift.OpenShiftTransformPlugin{Log: logger}, enabledByDefault: true},
+		{plugin: &buildconfig.BuildConfigTransformPlugin{Log: logger}, enabledByDefault: false},
+	}
+}
+
 func GetPlugins(dir string, logger *logrus.Logger) ([]transform.Plugin, error) {
 	pluginList := []transform.Plugin{}
 	files, err := ioutil.ReadDir(dir)
@@ -67,16 +80,37 @@ func IsExecAny(mode os.FileMode) bool {
 }
 
 func GetFilteredPlugins(pluginDir string, skipPlugins []string, logger *logrus.Logger) ([]transform.Plugin, error) {
+	return getPlugins(pluginDir, skipPlugins, logger, true)
+}
+
+// GetDefaultPlugins returns plugins that run when no stage is explicitly requested.
+func GetDefaultPlugins(pluginDir string, skipPlugins []string, logger *logrus.Logger) ([]transform.Plugin, error) {
+	return getPlugins(pluginDir, skipPlugins, logger, false)
+}
+
+// GetOptInPluginNames returns built-in plugins which require an explicit stage.
+func GetOptInPluginNames(logger *logrus.Logger) map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, builtIn := range getBuiltInPlugins(logger) {
+		if !builtIn.enabledByDefault {
+			names[builtIn.plugin.Metadata().Name] = struct{}{}
+		}
+	}
+	return names
+}
+
+func getPlugins(pluginDir string, skipPlugins []string, logger *logrus.Logger, includeOptIn bool) ([]transform.Plugin, error) {
 	var filteredPlugins, unfilteredPlugins []transform.Plugin
 	absPathPluginDir, err := filepath.Abs("plugins")
 	if err != nil {
 		return filteredPlugins, err
 	}
 
-	// Start with built-in plugins
-	unfilteredPlugins = append(unfilteredPlugins, &kubernetes.KubernetesTransformPlugin{})
-	unfilteredPlugins = append(unfilteredPlugins, &openshift.OpenShiftTransformPlugin{Log: logger})
-	unfilteredPlugins = append(unfilteredPlugins, &buildconfig.BuildConfigTransformPlugin{Log: logger})
+	for _, builtIn := range getBuiltInPlugins(logger) {
+		if includeOptIn || builtIn.enabledByDefault {
+			unfilteredPlugins = append(unfilteredPlugins, builtIn.plugin)
+		}
+	}
 
 	paths := []string{absPathPluginDir, pluginDir, GlobalPluginDir, PkgPluginDir}
 
