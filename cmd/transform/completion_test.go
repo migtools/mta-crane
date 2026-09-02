@@ -43,7 +43,7 @@ func TestGetPluginCompletions(t *testing.T) {
 			args:          []string{},
 			toComplete:    "",
 			wantDirective: cobra.ShellCompDirectiveNoFileComp,
-			wantPlugins:   []string{"KubernetesPlugin", "OpenShiftPlugin", "BuildConfigToBuildsPlugin"}, // Built-in plugins are always present
+			wantPlugins:   []string{"KubernetesPlugin", "OpenShiftPlugin", "BuildConfigPlugin"}, // Built-in plugins are always present
 			checkContains: true,
 		},
 		{
@@ -66,7 +66,7 @@ func TestGetPluginCompletions(t *testing.T) {
 			args:          []string{},
 			toComplete:    "",
 			wantDirective: cobra.ShellCompDirectiveNoFileComp,
-			wantPlugins:   []string{"OpenShiftPlugin", "BuildConfigToBuildsPlugin"}, // KubernetesPlugin skipped, others remain
+			wantPlugins:   []string{"OpenShiftPlugin", "BuildConfigPlugin"}, // KubernetesPlugin skipped, others remain
 		},
 		{
 			name: "error path - plugin-dir flag does not exist",

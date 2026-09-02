@@ -9,6 +9,7 @@ import (
 	"github.com/konveyor/crane-lib/transform"
 	binary_plugin "github.com/konveyor/crane-lib/transform/binary-plugin"
 	"github.com/konveyor/crane-lib/transform/kubernetes"
+	"github.com/migtools/crane-plugin-buildconfig-to-shipwright/buildconfig"
 	"github.com/migtools/crane-plugin-openshift/openshift"
 	"github.com/sirupsen/logrus"
 )
@@ -75,7 +76,7 @@ func GetFilteredPlugins(pluginDir string, skipPlugins []string, logger *logrus.L
 	// Start with built-in plugins
 	unfilteredPlugins = append(unfilteredPlugins, &kubernetes.KubernetesTransformPlugin{})
 	unfilteredPlugins = append(unfilteredPlugins, &openshift.OpenShiftTransformPlugin{Log: logger})
-	unfilteredPlugins = append(unfilteredPlugins, NewBuildConfigToBuildsPlugin(logger))
+	unfilteredPlugins = append(unfilteredPlugins, &buildconfig.BuildConfigTransformPlugin{Log: logger})
 
 	paths := []string{absPathPluginDir, pluginDir, GlobalPluginDir, PkgPluginDir}
 
