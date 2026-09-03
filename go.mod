@@ -11,7 +11,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/jarcoal/httpmock v1.2.0
 	github.com/konveyor/crane-lib v0.1.6-0.20260824070743-b8fa732fccd4
-	github.com/migtools/crane-plugin-buildconfig-to-shipwright v0.0.0-20260902121755-a1e2afacab1e
+	github.com/migtools/crane-plugin-buildconfig-to-shipwright v0.0.0-20260903115850-156c85c99df6
 	github.com/migtools/crane-plugin-openshift v0.1.1
 	github.com/migtools/pvc-transfer v0.0.0-20260820041907-3bfa753b411a
 	github.com/olekukonko/tablewriter v0.0.5
