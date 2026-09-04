@@ -345,7 +345,7 @@ func (o *Options) run() error {
 
 		if len(existingStages) == 0 {
 			// No stages exist - load all available plugins and create stages for each
-			allPlugins, err := plugin.GetFilteredPlugins(pluginDir, o.SkipPlugins, log)
+			allPlugins, err := plugin.GetDefaultPlugins(pluginDir, o.SkipPlugins, log)
 			if err != nil {
 				log.Debugf("Failed to load plugins from %q: %v", pluginDir, err)
 				return fmt.Errorf("failed to load plugins: %w", err)
@@ -371,9 +371,17 @@ func (o *Options) run() error {
 			selector = internalTransform.StageSelector{}
 			log.Info("Populating and executing all default stages")
 		} else {
-			// Run all discovered stages
-			log.Infof("Discovered %d existing stage(s), running all", len(existingStages))
-			// Empty selector means run all stages
+			optInPlugins := plugin.GetOptInPluginNames(log)
+			for _, stage := range existingStages {
+				if _, optIn := optInPlugins[stage.PluginName]; !optIn {
+					selector.Stages = append(selector.Stages, stage.DirName)
+				}
+			}
+			if len(selector.Stages) == 0 {
+				log.Info("No non-opt-in stages found")
+				return nil
+			}
+			log.Infof("Discovered %d existing stage(s), running %d non-opt-in stage(s)", len(existingStages), len(selector.Stages))
 		}
 	}
 
