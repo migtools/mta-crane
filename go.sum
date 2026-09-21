@@ -400,8 +400,8 @@ github.com/maxatome/go-testdeep v1.11.0/go.mod h1:011SgQ6efzZYAen6fDn4BqQ+lUR72y
 github.com/mfridman/tparse v0.18.0 h1:wh6dzOKaIwkUGyKgOntDW4liXSo37qg5AXbIhkMV3vE=
 github.com/mfridman/tparse v0.18.0/go.mod h1:gEvqZTuCgEhPbYk/2lS3Kcxg1GmTxxU7kTC8DvP0i/A=
 github.com/miekg/dns v1.0.14/go.mod h1:W1PPwlIAgtquWBMBEV9nkV9Cazfe8ScdGz/Lj7v3Nrg=
-github.com/migtools/crane-plugin-buildconfig-to-builds v0.0.0-20260910124222-8d47e0fc26cb h1:jrUxCSEPAgd5Ys6ohJVLIsNcTHEfM8sEKA1IKJ7NppE=
-github.com/migtools/crane-plugin-buildconfig-to-builds v0.0.0-20260910124222-8d47e0fc26cb/go.mod h1:kOb+lXNyyNzs+W9Mll9HrbHDjPA372/t6n0DyRcckyQ=
+github.com/migtools/crane-plugin-buildconfig-to-builds v0.11.0 h1:3Tcp4dDLiFyT8uH33mRtiCqDbm82eOWyjohEg9GZFyQ=
+github.com/migtools/crane-plugin-buildconfig-to-builds v0.11.0/go.mod h1:kOb+lXNyyNzs+W9Mll9HrbHDjPA372/t6n0DyRcckyQ=
 github.com/migtools/crane-plugin-openshift v0.1.1 h1:67h9tND4GeRlsbADbVo7RvMz//Q+yKvGoyHjeTJal9w=
 github.com/migtools/crane-plugin-openshift v0.1.1/go.mod h1:wFdbjNnSn8tSen9oYy8769ivLmwAS3TFL34H1jfSeFw=
 github.com/migtools/pvc-transfer v0.0.0-20260820041907-3bfa753b411a h1:bSsyUn96V8oLl6S//jWK78nHicx5u7Wr7qhPSZYbZkI=
