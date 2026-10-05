@@ -12,7 +12,7 @@ require (
 	github.com/jarcoal/httpmock v1.2.0
 	github.com/konveyor/crane-lib v0.1.6-0.20260911111740-f8e16a055cd6
 	github.com/migtools/crane-plugin-buildconfig-to-builds v0.11.0
-	github.com/migtools/crane-plugin-openshift v0.1.1
+	github.com/migtools/crane-plugin-openshift v0.11.0
 	github.com/migtools/pvc-transfer v0.0.0-20260820041907-3bfa753b411a
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/onsi/ginkgo/v2 v2.28.1
