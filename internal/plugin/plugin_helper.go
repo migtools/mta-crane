@@ -20,6 +20,21 @@ const (
 	PkgPluginDir          = "/usr/share/crane/plugins"
 )
 
+type PluginSource string
+
+const (
+	PluginSourceEmbedded PluginSource = "embedded"
+	PluginSourceExternal PluginSource = "external"
+)
+
+// PluginDescriptor describes a discovered plugin and its transform behavior.
+type PluginDescriptor struct {
+	Plugin           transform.Plugin
+	Source           PluginSource
+	SourceDirectory  string
+	EnabledByDefault bool
+}
+
 type builtInPlugin struct {
 	plugin           transform.Plugin
 	enabledByDefault bool
@@ -80,12 +95,32 @@ func IsExecAny(mode os.FileMode) bool {
 }
 
 func GetFilteredPlugins(pluginDir string, skipPlugins []string, logger *logrus.Logger) ([]transform.Plugin, error) {
-	return getPlugins(pluginDir, skipPlugins, logger, true)
+	descriptors, err := GetPluginDescriptors(pluginDir, skipPlugins, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	plugins := make([]transform.Plugin, len(descriptors))
+	for i, descriptor := range descriptors {
+		plugins[i] = descriptor.Plugin
+	}
+	return plugins, nil
 }
 
 // GetDefaultPlugins returns plugins that run when no stage is explicitly requested.
 func GetDefaultPlugins(pluginDir string, skipPlugins []string, logger *logrus.Logger) ([]transform.Plugin, error) {
-	return getPlugins(pluginDir, skipPlugins, logger, false)
+	descriptors, err := GetPluginDescriptors(pluginDir, skipPlugins, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	plugins := make([]transform.Plugin, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		if descriptor.EnabledByDefault {
+			plugins = append(plugins, descriptor.Plugin)
+		}
+	}
+	return plugins, nil
 }
 
 // GetOptInPluginNames returns built-in plugins which require an explicit stage.
@@ -99,49 +134,67 @@ func GetOptInPluginNames(logger *logrus.Logger) map[string]struct{} {
 	return names
 }
 
-func getPlugins(pluginDir string, skipPlugins []string, logger *logrus.Logger, includeOptIn bool) ([]transform.Plugin, error) {
-	var filteredPlugins, unfilteredPlugins []transform.Plugin
+// GetPluginDescriptors returns the winning plugin from each discovery source.
+// Earlier sources take precedence when multiple plugins have the same name.
+func GetPluginDescriptors(pluginDir string, skipPlugins []string, logger *logrus.Logger) ([]PluginDescriptor, error) {
 	absPathPluginDir, err := filepath.Abs("plugins")
 	if err != nil {
-		return filteredPlugins, err
-	}
-
-	for _, builtIn := range getBuiltInPlugins(logger) {
-		if includeOptIn || builtIn.enabledByDefault {
-			unfilteredPlugins = append(unfilteredPlugins, builtIn.plugin)
-		}
+		return nil, err
 	}
 
 	paths := []string{absPathPluginDir, pluginDir, GlobalPluginDir, PkgPluginDir}
+	return discoverPluginDescriptors(getBuiltInPlugins(logger), paths, skipPlugins, func(path string) ([]transform.Plugin, error) {
+		return GetPlugins(path, logger)
+	})
+}
+
+func discoverPluginDescriptors(builtIns []builtInPlugin, paths, skipPlugins []string, loadPlugins func(string) ([]transform.Plugin, error)) ([]PluginDescriptor, error) {
+	descriptors := make([]PluginDescriptor, 0, len(builtIns))
+	seen := make(map[string]struct{}, len(builtIns))
+	for _, builtIn := range builtIns {
+		name := builtIn.plugin.Metadata().Name
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		descriptors = append(descriptors, PluginDescriptor{
+			Plugin:           builtIn.plugin,
+			Source:           PluginSourceEmbedded,
+			EnabledByDefault: builtIn.enabledByDefault,
+		})
+		seen[name] = struct{}{}
+	}
 
 	for _, path := range paths {
-		plugins, err := GetPlugins(path, logger)
+		plugins, err := loadPlugins(path)
 		if err != nil {
-			return filteredPlugins, err
+			return nil, err
 		}
-		for _, newPlugin := range plugins {
-			exists := false
-			for _, plugin := range unfilteredPlugins {
-				if plugin.Metadata().Name == newPlugin.Metadata().Name {
-					exists = true
-					break
-				}
+		for _, discoveredPlugin := range plugins {
+			name := discoveredPlugin.Metadata().Name
+			if _, exists := seen[name]; exists {
+				continue
 			}
-			if !exists {
-				unfilteredPlugins = append(unfilteredPlugins, newPlugin)
-			}
+			descriptors = append(descriptors, PluginDescriptor{
+				Plugin:           discoveredPlugin,
+				Source:           PluginSourceExternal,
+				SourceDirectory:  path,
+				EnabledByDefault: true,
+			})
+			seen[name] = struct{}{}
 		}
 	}
 
 	if len(skipPlugins) == 0 {
-		return unfilteredPlugins, nil
+		return descriptors, nil
 	}
-	for _, thisPlugin := range unfilteredPlugins {
-		if !isPluginInList(thisPlugin, skipPlugins) {
-			filteredPlugins = append(filteredPlugins, thisPlugin)
+
+	filteredDescriptors := make([]PluginDescriptor, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		if !isPluginInList(descriptor.Plugin, skipPlugins) {
+			filteredDescriptors = append(filteredDescriptors, descriptor)
 		}
 	}
-	return filteredPlugins, nil
+	return filteredDescriptors, nil
 }
 
 func isPluginInList(plugin transform.Plugin, list []string) bool {
