@@ -1,0 +1,67 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-verify-contexts
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: test-setup
+spec:
+  description: Verify that both prepared OpenShift contexts can reach their clusters.
+  params:
+    - name: kubeconfigPath
+      type: string
+      description: Absolute path to the merged kubeconfig.
+    - name: sourceContext
+      type: string
+      default: src
+    - name: targetContext
+      type: string
+      default: tgt
+    - name: sourceNonAdminContext
+      type: string
+      default: src-dev
+    - name: targetNonAdminContext
+      type: string
+      default: tgt-dev
+  workspaces:
+    - name: shared-workspace
+      description: Workspace containing the merged kubeconfig.
+  results:
+    - name: sourceVersion
+      description: OpenShift version returned by the source cluster.
+    - name: targetVersion
+      description: OpenShift version returned by the target cluster.
+  steps:
+    - name: verify-contexts
+      image: quay.io/openshift/origin-cli:4.18
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        KUBECONFIG_PATH="$(params.kubeconfigPath)"
+
+        echo "Checking source context: $(params.sourceContext)"
+        SOURCE_VERSION=$(oc --kubeconfig="${KUBECONFIG_PATH}" \
+          --context="$(params.sourceContext)" version -o json | \
+          awk -F'"' '/openshiftVersion/ { print $4; exit }')
+        oc --kubeconfig="${KUBECONFIG_PATH}" \
+          --context="$(params.sourceContext)" whoami
+
+        echo "Checking target context: $(params.targetContext)"
+        TARGET_VERSION=$(oc --kubeconfig="${KUBECONFIG_PATH}" \
+          --context="$(params.targetContext)" version -o json | \
+          awk -F'"' '/openshiftVersion/ { print $4; exit }')
+        oc --kubeconfig="${KUBECONFIG_PATH}" \
+          --context="$(params.targetContext)" whoami
+
+        echo "Checking source non-admin context: $(params.sourceNonAdminContext)"
+        oc --kubeconfig="${KUBECONFIG_PATH}" \
+          --context="$(params.sourceNonAdminContext)" whoami
+
+        echo "Checking target non-admin context: $(params.targetNonAdminContext)"
+        oc --kubeconfig="${KUBECONFIG_PATH}" \
+          --context="$(params.targetNonAdminContext)" whoami
+
+        echo -n "${SOURCE_VERSION:-unknown}" > "$(results.sourceVersion.path)"
+        echo -n "${TARGET_VERSION:-unknown}" > "$(results.targetVersion.path)"
+        echo "Both OpenShift contexts are reachable"

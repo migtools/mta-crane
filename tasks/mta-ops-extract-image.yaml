@@ -1,0 +1,82 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-extract-image
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: test-setup
+spec:
+  description: Extract the Linux AMD64 mta-ops binary from a Konflux image.
+  params:
+    - name: imagePullspec
+      type: string
+      description: Digest-pinned MTA-Ops image pullspec.
+    - name: kubeconfigPath
+      type: string
+      default: /workspace/shared-workspace/.kube/merged-kubeconfig
+      description: Admin kubeconfig used to read the source cluster pull-secret.
+    - name: sourceContext
+      type: string
+      default: src
+  workspaces:
+    - name: shared-workspace
+      description: Workspace where the extracted mta-ops binary is written.
+  results:
+    - name: mtaOpsBinaryPath
+      description: Path to the extracted mta-ops binary.
+  steps:
+    - name: extract
+      image: quay.io/migqe/migqe-ginkgo:latest
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
+        OUTPUT_DIR="${WORKSPACE_PATH}/bin"
+        EXTRACT_DIR="${WORKSPACE_PATH}/mta-ops-image-extract"
+        KUBECONFIG_PATH="$(params.kubeconfigPath)"
+        REGISTRY_AUTH_FILE="$(mktemp)"
+
+        cleanup() {
+          rm -f "${REGISTRY_AUTH_FILE}"
+          rm -rf "${EXTRACT_DIR}"
+        }
+        trap cleanup EXIT
+
+        mkdir -p "${OUTPUT_DIR}" "${EXTRACT_DIR}"
+        chmod 0777 "${OUTPUT_DIR}"
+
+        registry_config_arg=()
+        pull_secret_b64=$(oc --kubeconfig="${KUBECONFIG_PATH}" \
+          --context="$(params.sourceContext)" \
+          get secret/pull-secret -n openshift-config \
+          -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null || true)
+
+        if [ -n "${pull_secret_b64}" ]; then
+          printf '%s' "${pull_secret_b64}" | base64 -d > "${REGISTRY_AUTH_FILE}"
+          chmod 600 "${REGISTRY_AUTH_FILE}"
+          registry_config_arg=(--registry-config="${REGISTRY_AUTH_FILE}")
+          echo "Using the source cluster pull-secret for registry authentication"
+        else
+          echo "No source cluster pull-secret was available; trying image extraction without registry credentials"
+        fi
+
+        oc image extract "$(params.imagePullspec)" \
+          "${registry_config_arg[@]}" \
+          --path "/archives/mta-ops_linux_amd64:${EXTRACT_DIR}/" \
+          --confirm
+
+        binary_source=$(find "${EXTRACT_DIR}" -type f \
+          \( -name 'mta-ops_linux_amd64' -o -name 'mta-ops' \) \
+          -print -quit)
+        if [ -z "${binary_source}" ]; then
+          echo "ERROR: mta-ops_linux_amd64 was not found under /archives"
+          find "${EXTRACT_DIR}" -maxdepth 4 -type f -print || true
+          exit 1
+        fi
+
+        MTA_OPS_BINARY="${OUTPUT_DIR}/mta-ops"
+        cp "${binary_source}" "${MTA_OPS_BINARY}"
+        chmod +x "${MTA_OPS_BINARY}"
+        "${MTA_OPS_BINARY}" version || true
+        printf '%s' "${MTA_OPS_BINARY}" > "$(results.mtaOpsBinaryPath.path)"

@@ -1,0 +1,164 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-setup-nonadmin-contexts
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: test-setup
+spec:
+  description: >-
+    Configure HTPasswd identity providers on source and target OpenShift
+    clusters, create the dev user, log in with that user, and add src-dev and
+    tgt-dev contexts to the merged kubeconfig.
+  params:
+    - name: username
+      type: string
+      default: dev
+      description: Non-admin username to create and use.
+    - name: password
+      type: string
+      default: dev
+      description: Non-admin password to create and use.
+    - name: mergedKubeconfigPath
+      type: string
+      default: /workspace/shared-workspace/.kube/merged-kubeconfig
+      description: Path where the four-context kubeconfig is written.
+    - name: sourceNonAdminContext
+      type: string
+      default: src-dev
+    - name: targetNonAdminContext
+      type: string
+      default: tgt-dev
+  workspaces:
+    - name: shared-workspace
+      description: Workspace containing kubeconfigs and generated HTPasswd files.
+  steps:
+    - name: generate-htpasswd
+      image: registry.access.redhat.com/ubi9/python-311:latest
+      env:
+        - name: TEST_USERNAME
+          value: $(params.username)
+        - name: TEST_PASSWORD
+          value: $(params.password)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
+        HTPASSWD_DIR="${WORKSPACE_PATH}/.htpasswd"
+        mkdir -p "${HTPASSWD_DIR}"
+
+        python3 -m pip install --quiet --disable-pip-version-check bcrypt==4.0.1
+        USERNAME="${TEST_USERNAME}" PASSWORD="${TEST_PASSWORD}" \
+          python3 - <<'PY'
+        import os
+        from pathlib import Path
+        import bcrypt
+
+        username = os.environ["USERNAME"]
+        password = os.environ["PASSWORD"].encode()
+        hashed = bcrypt.hashpw(password, bcrypt.gensalt()).decode().replace("$2b$", "$2y$")
+        line = f"{username}:{hashed}\n"
+        output = Path("$(workspaces.shared-workspace.path)/.htpasswd")
+        (output / "source").write_text(line)
+        (output / "target").write_text(line)
+        PY
+
+        chmod 600 "${HTPASSWD_DIR}/source" "${HTPASSWD_DIR}/target"
+
+    - name: configure-and-login
+      image: quay.io/openshift/origin-cli:4.18
+      env:
+        - name: TEST_USERNAME
+          value: $(params.username)
+        - name: TEST_PASSWORD
+          value: $(params.password)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
+        HTPASSWD_DIR="${WORKSPACE_PATH}/.htpasswd"
+        KUBECONFIG_DIR="${WORKSPACE_PATH}/.kube"
+        MERGED_KUBECONFIG="$(params.mergedKubeconfigPath)"
+        SOURCE_ADMIN_KUBECONFIG="${KUBECONFIG_DIR}/source.kubeconfig"
+        TARGET_ADMIN_KUBECONFIG="${KUBECONFIG_DIR}/target.kubeconfig"
+        SOURCE_DEV_KUBECONFIG="${KUBECONFIG_DIR}/source-dev.kubeconfig"
+        TARGET_DEV_KUBECONFIG="${KUBECONFIG_DIR}/target-dev.kubeconfig"
+
+        configure_cluster() {
+          local kubeconfig="$1"
+          local idp_name="$2"
+          local htpasswd_file="$3"
+
+          configured_idps=$(KUBECONFIG="${kubeconfig}" oc get oauth cluster \
+            -o jsonpath='{range .spec.identityProviders[*]}{.name}{"\n"}{end}')
+          if printf '%s\n' "${configured_idps}" | grep -qx "${idp_name}"; then
+            echo "Identity provider ${idp_name} already exists; skipping patch"
+          else
+            KUBECONFIG="${kubeconfig}" oc create secret generic "${idp_name}" \
+              --from-file=htpasswd="${htpasswd_file}" \
+              -n openshift-config \
+              --dry-run=client -o yaml | \
+              KUBECONFIG="${kubeconfig}" oc apply -f -
+
+            if [ -n "${configured_idps}" ]; then
+              KUBECONFIG="${kubeconfig}" oc patch oauth cluster --type=json \
+                -p "[{\"op\":\"add\",\"path\":\"/spec/identityProviders/-\",\"value\":{\"name\":\"${idp_name}\",\"type\":\"HTPasswd\",\"htpasswd\":{\"fileData\":{\"name\":\"${idp_name}\"}}}}]"
+            else
+              KUBECONFIG="${kubeconfig}" oc patch oauth cluster --type=json \
+                -p "[{\"op\":\"add\",\"path\":\"/spec/identityProviders\",\"value\":[{\"name\":\"${idp_name}\",\"type\":\"HTPasswd\",\"htpasswd\":{\"fileData\":{\"name\":\"${idp_name}\"}}}]}]"
+            fi
+          fi
+
+          KUBECONFIG="${kubeconfig}" oc rollout status \
+            deployment/oauth-openshift \
+            -n openshift-authentication \
+            --timeout=600s
+        }
+
+        configure_cluster "${SOURCE_ADMIN_KUBECONFIG}" \
+          "htpasswd-src" "${HTPASSWD_DIR}/source"
+        configure_cluster "${TARGET_ADMIN_KUBECONFIG}" \
+          "htpasswd-tgt" "${HTPASSWD_DIR}/target"
+
+        login_nonadmin() {
+          local admin_kubeconfig="$1"
+          local output_kubeconfig="$2"
+          local context_name="$3"
+          local api_server
+
+          api_server=$(KUBECONFIG="${admin_kubeconfig}" oc whoami --show-server)
+          for attempt in 1 2 3 4 5 6; do
+            if oc login "${api_server}" \
+                -u "${TEST_USERNAME}" \
+                -p "${TEST_PASSWORD}" \
+                --insecure-skip-tls-verify=true \
+                --kubeconfig="${output_kubeconfig}" >/dev/null; then
+              break
+            fi
+            echo "Non-admin login attempt ${attempt} failed; retrying in 30s"
+            sleep 30
+          done
+
+          KUBECONFIG="${output_kubeconfig}" oc whoami >/dev/null || {
+            echo "Non-admin login failed for ${context_name}"
+            exit 1
+          }
+
+          current_context=$(KUBECONFIG="${output_kubeconfig}" oc config current-context)
+          oc config rename-context "${current_context}" "${context_name}" \
+            --kubeconfig="${output_kubeconfig}"
+        }
+
+        login_nonadmin "${SOURCE_ADMIN_KUBECONFIG}" \
+          "${SOURCE_DEV_KUBECONFIG}" "$(params.sourceNonAdminContext)"
+        login_nonadmin "${TARGET_ADMIN_KUBECONFIG}" \
+          "${TARGET_DEV_KUBECONFIG}" "$(params.targetNonAdminContext)"
+
+        KUBECONFIG="${SOURCE_ADMIN_KUBECONFIG}:${TARGET_ADMIN_KUBECONFIG}:${SOURCE_DEV_KUBECONFIG}:${TARGET_DEV_KUBECONFIG}" \
+          oc config view --flatten --raw > "${MERGED_KUBECONFIG}"
+        chmod 600 "${MERGED_KUBECONFIG}"
+
+        echo "Prepared contexts:"
+        oc --kubeconfig="${MERGED_KUBECONFIG}" config get-contexts

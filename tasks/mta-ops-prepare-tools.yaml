@@ -1,0 +1,70 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-prepare-tools
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: test-setup
+spec:
+  description: >-
+    Clone the mta-8.3 MTA-Ops test repository and install k8s-apps-deployer
+    into the shared workspace.
+  params:
+    - name: mtaOpsRepository
+      type: string
+      default: https://github.com/migtools/mta-crane.git
+    - name: mtaOpsBranch
+      type: string
+      default: konflux-its
+    - name: k8sDeployRepository
+      type: string
+      default: https://github.com/migtools/k8s-apps-deployer.git
+    - name: k8sDeployBranch
+      type: string
+      default: main
+  workspaces:
+    - name: shared-workspace
+      description: Workspace for source repositories and test tools.
+  results:
+    - name: testRepositoryPath
+      description: Path to the checked out MTA-Ops test repository.
+    - name: k8sDeployBinaryPath
+      description: Path to the installed k8sdeploy binary.
+  steps:
+    - name: checkout
+      image: alpine/git:latest
+      script: |
+        #!/bin/sh
+        set -eu
+
+        WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
+        TEST_REPO_PATH="${WORKSPACE_PATH}/mta-crane"
+        K8SDEPLOY_REPO_PATH="${WORKSPACE_PATH}/k8s-apps-deployer"
+
+        rm -rf "${TEST_REPO_PATH}" "${K8SDEPLOY_REPO_PATH}"
+        git clone --depth 1 --branch "$(params.mtaOpsBranch)" \
+          "$(params.mtaOpsRepository)" "${TEST_REPO_PATH}"
+        git clone --depth 1 --branch "$(params.k8sDeployBranch)" \
+          "$(params.k8sDeployRepository)" "${K8SDEPLOY_REPO_PATH}"
+
+        mkdir -p "${WORKSPACE_PATH}/k8s-apps-deployer-venv"
+        chmod 0777 "${WORKSPACE_PATH}/k8s-apps-deployer-venv"
+        chmod -R a+rwX "${K8SDEPLOY_REPO_PATH}"
+        printf '%s' "${TEST_REPO_PATH}" > "$(results.testRepositoryPath.path)"
+
+    - name: install-k8sdeploy
+      image: quay.io/migqe/migqe-ginkgo:latest
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
+        K8SDEPLOY_REPO_PATH="${WORKSPACE_PATH}/k8s-apps-deployer"
+        VENV_PATH="${WORKSPACE_PATH}/k8s-apps-deployer-venv"
+
+        python3 -m venv "${VENV_PATH}"
+        "${VENV_PATH}/bin/pip" install --upgrade pip
+        "${VENV_PATH}/bin/pip" install -e "${K8SDEPLOY_REPO_PATH}"
+        "${VENV_PATH}/bin/k8sdeploy" --help >/dev/null
+
+        printf '%s' "${VENV_PATH}/bin/k8sdeploy" > "$(results.k8sDeployBinaryPath.path)"

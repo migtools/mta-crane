@@ -1,0 +1,308 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: mta-ops-konflux-tier0
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: ocpctl-test
+spec:
+  description: >-
+    Konflux-style MTA-Ops Tier 0 pipeline. Leases two OCPCTL pool clusters,
+    downloads their kubeconfigs, runs Tier 0, and releases both clusters.
+  params:
+    - name: SNAPSHOT
+      type: string
+      default: ""
+      description: Konflux Snapshot JSON reserved for future image discovery.
+    - name: poolName
+      type: string
+      default: ci-sno-pool-1
+    - name: leaseDuration
+      type: string
+      default: "4"
+    - name: ocpctlUrl
+      type: string
+      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+    - name: ocpctlSecretName
+      type: string
+      default: ocpctl-ci-key
+    - name: ocpctlSecretKey
+      type: string
+      default: api-key
+    - name: mtaOpsRsyncImage
+      type: string
+      default: registry.stage.redhat.io/mta/mta-rsync-transfer-rhel9:mta-rsync-transfer-container-8.3.3-202610212123.p2.g4b5ef5a.assembly.stream.el9
+      description: Rsync transfer image used by the non-GA MTA-Ops build.
+    - name: mtaOpsImagePullspec
+      type: string
+      default: registry.stage.redhat.io/mta/mta-ops-rhel9:mta-ops-container-8.3.3-202610212123.p2.g402d9e1.assembly.stream.el9
+      description: MTA-Ops image pullspec to extract.
+  workspaces:
+    - name: shared-workspace
+  results:
+    - name: sourceClusterId
+      value: $(tasks.lease-source.results.clusterId)
+    - name: targetClusterId
+      value: $(tasks.lease-target.results.clusterId)
+    - name: sourceVersion
+      value: $(tasks.verify-clusters.results.sourceVersion)
+    - name: targetVersion
+      value: $(tasks.verify-clusters.results.targetVersion)
+    - name: testStatus
+      value: $(tasks.run-tier0.results.testStatus)
+  tasks:
+    - name: lease-source
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-ocpctl-lease-cluster.yaml
+      params:
+        - name: poolName
+          value: $(params.poolName)
+        - name: leaseDuration
+          value: $(params.leaseDuration)
+        - name: purpose
+          value: MTA-Ops Tier 0 source testing
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
+    - name: lease-target
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-ocpctl-lease-cluster.yaml
+      params:
+        - name: poolName
+          value: $(params.poolName)
+        - name: leaseDuration
+          value: $(params.leaseDuration)
+        - name: purpose
+          value: MTA-Ops Tier 0 target testing
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
+    - name: download-source-kubeconfig
+      runAfter:
+        - lease-source
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-ocpctl-download-kubeconfig.yaml
+      params:
+        - name: clusterId
+          value: $(tasks.lease-source.results.clusterId)
+        - name: outputFileName
+          value: source.kubeconfig
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: download-target-kubeconfig
+      runAfter:
+        - lease-target
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-ocpctl-download-kubeconfig.yaml
+      params:
+        - name: clusterId
+          value: $(tasks.lease-target.results.clusterId)
+        - name: outputFileName
+          value: target.kubeconfig
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: merge-kubeconfigs
+      runAfter:
+        - download-source-kubeconfig
+        - download-target-kubeconfig
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-merge-kubeconfigs.yaml
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: setup-nonadmin-contexts
+      runAfter:
+        - merge-kubeconfigs
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-setup-nonadmin-contexts.yaml
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: verify-clusters
+      runAfter:
+        - setup-nonadmin-contexts
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-verify-contexts.yaml
+      params:
+        - name: kubeconfigPath
+          value: $(tasks.merge-kubeconfigs.results.kubeconfigPath)
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: prepare-tools
+      runAfter:
+        - verify-clusters
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-prepare-tools.yaml
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: extract-mta-ops
+      runAfter:
+        - prepare-tools
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-extract-image.yaml
+      params:
+        - name: imagePullspec
+          value: $(params.mtaOpsImagePullspec)
+        - name: kubeconfigPath
+          value: $(tasks.merge-kubeconfigs.results.kubeconfigPath)
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: run-tier0
+      runAfter:
+        - extract-mta-ops
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-run-tier0.yaml
+      params:
+        - name: testRepositoryPath
+          value: $(tasks.prepare-tools.results.testRepositoryPath)
+        - name: mtaOpsBinaryPath
+          value: $(tasks.extract-mta-ops.results.mtaOpsBinaryPath)
+        - name: k8sDeployBinaryPath
+          value: $(tasks.prepare-tools.results.k8sDeployBinaryPath)
+        - name: mtaOpsRsyncImage
+          value: $(params.mtaOpsRsyncImage)
+        - name: kubeconfigPath
+          value: $(tasks.merge-kubeconfigs.results.kubeconfigPath)
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+  finally:
+    - name: release-source
+      when:
+        - input: $(tasks.lease-source.status)
+          operator: in
+          values: [Succeeded]
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-ocpctl-release-cluster.yaml
+      params:
+        - name: clusterId
+          value: $(tasks.lease-source.results.clusterId)
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
+    - name: release-target
+      when:
+        - input: $(tasks.lease-target.status)
+          operator: in
+          values: [Succeeded]
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-ocpctl-release-cluster.yaml
+      params:
+        - name: clusterId
+          value: $(tasks.lease-target.results.clusterId)
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)

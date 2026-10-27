@@ -1,0 +1,72 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-run-tier0-tests
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: e2e-test
+spec:
+  description: Run the complete Tier 0 suite from the prepared mta-8.3 test repository.
+  params:
+    - name: testRepositoryPath
+      type: string
+    - name: mtaOpsBinaryPath
+      type: string
+    - name: k8sDeployBinaryPath
+      type: string
+    - name: mtaOpsRsyncImage
+      type: string
+      description: Rsync transfer image used by the non-GA MTA-Ops build.
+    - name: kubeconfigPath
+      type: string
+      default: /workspace/shared-workspace/.kube/merged-kubeconfig
+  workspaces:
+    - name: shared-workspace
+      description: Workspace containing tools, kubeconfig, reports, and logs.
+  results:
+    - name: testStatus
+      description: Test result, PASSED or FAILED.
+  steps:
+    - name: run-test
+      image: quay.io/migqe/migqe-ginkgo:latest
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        trap 'printf FAILED > "$(results.testStatus.path)"' ERR
+
+        TEST_REPO_PATH="$(params.testRepositoryPath)"
+        MTA_OPS_BIN="$(params.mtaOpsBinaryPath)"
+        K8SDEPLOY_BIN="$(params.k8sDeployBinaryPath)"
+        RSYNC_IMAGE="$(params.mtaOpsRsyncImage)"
+        KUBECONFIG_PATH="$(params.kubeconfigPath)"
+
+        test -x "${MTA_OPS_BIN}"
+        test -x "${K8SDEPLOY_BIN}"
+        test -n "${RSYNC_IMAGE}"
+        test -s "${KUBECONFIG_PATH}"
+        command -v go
+        command -v ginkgo
+        command -v python3
+        command -v oc
+        command -v kubectl
+
+        export KUBECONFIG="${KUBECONFIG_PATH}"
+        mkdir -p "${TEST_REPO_PATH}/reports"
+
+        cd "${TEST_REPO_PATH}"
+        ginkgo run -v -r --procs=4 \
+          --timeout=4h \
+          --junit-report="${TEST_REPO_PATH}/reports/junitreport.xml" \
+          --keep-going \
+          e2e-tests/tests/tier0 -- \
+          --k8sdeploy-bin="${K8SDEPLOY_BIN}" \
+          --crane-bin="${MTA_OPS_BIN}" \
+          --source-context=src \
+          --target-context=tgt \
+          --source-nonadmin-context=src-dev \
+          --target-nonadmin-context=tgt-dev \
+          --rsync-image="${RSYNC_IMAGE}" \
+          --insecure-skip-tls-verify=true \
+          --verbose-logs
+
+        printf PASSED > "$(results.testStatus.path)"

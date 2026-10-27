@@ -1,0 +1,45 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-ocpctl-release-cluster
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: cluster-lifecycle
+spec:
+  description: Release an OCPCTL cluster back to its pool.
+  params:
+    - name: clusterId
+      type: string
+    - name: ocpctlUrl
+      type: string
+      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+    - name: ocpctlSecretName
+      type: string
+      default: ocpctl-ci-key
+    - name: ocpctlSecretKey
+      type: string
+      default: api-key
+  steps:
+    - name: release
+      image: quay.io/migqe/migqe-base:latest
+      env:
+        - name: OCPCTL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.ocpctlSecretName)
+              key: $(params.ocpctlSecretKey)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        response=$(curl -sS -w '\n%{http_code}' --insecure \
+          -X POST "$(params.ocpctlUrl)/pools/clusters/$(params.clusterId)/release" \
+          -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+          -H 'Content-Type: application/json')
+        http_code=$(printf '%s\n' "${response}" | tail -n 1)
+        if [ "${http_code}" != "200" ] && [ "${http_code}" != "202" ]; then
+          echo "OCPCTL release returned HTTP ${http_code}; lease expiry will clean up the cluster"
+          printf '%s\n' "${response}" | sed '$d'
+          exit 0
+        fi
+        echo "Cluster released"
