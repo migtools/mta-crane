@@ -34,9 +34,10 @@ spec:
         result_path="$(results.mtaOpsNvr.path)"
         printf '%s' unknown > "${result_path}"
         art_url="$(params.artBuildHistoryUrl)"
+        art_group="$(params.artGroup)"
 
-        if [ -z "${art_url}" ]; then
-          echo "ART lookup skipped: artBuildHistoryUrl was not provided"
+        if [ -z "${art_url}" ] || [ -z "${art_group}" ]; then
+          echo "ART lookup skipped: artBuildHistoryUrl or artGroup is empty"
           exit 0
         fi
 
@@ -49,7 +50,7 @@ spec:
 
         start_date=$(date -u -d '90 days ago' +%F 2>/dev/null || date -u -v-90d +%F)
         end_date=$(date -u +%F)
-        search_url="${art_url%/}/search?group=$(params.artGroup)&assembly=stream&outcome=Success&engine=konflux&dateRange=${start_date}+to+${end_date}&name=mta-ops"
+        search_url="${art_url%/}/search?group=${art_group}&assembly=stream&outcome=Success&engine=konflux&dateRange=${start_date}+to+${end_date}&name=mta-ops"
 
         echo "Looking up MTA-Ops NVR for image digest ${digest}"
         response=$(curl -fsS --max-time 30 \
