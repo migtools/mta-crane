@@ -12,8 +12,7 @@ spec:
   params:
     - name: SNAPSHOT
       type: string
-      default: ""
-      description: Konflux Snapshot JSON reserved for future image discovery.
+      description: Konflux Snapshot JSON.
     - name: poolName
       type: string
       default: ci-sno-pool-1
@@ -29,14 +28,12 @@ spec:
     - name: ocpctlSecretKey
       type: string
       default: api-key
-    - name: mtaOpsRsyncImage
+    - name: mtaOpsComponentName
       type: string
-      default: registry.stage.redhat.io/mta/mta-rsync-transfer-rhel9:mta-rsync-transfer-container-8.3.3-202610212123.p2.g4b5ef5a.assembly.stream.el9
-      description: Rsync transfer image used by the non-GA MTA-Ops build.
-    - name: mtaOpsImagePullspec
+      default: mta-8-3-mta-ops
+    - name: rsyncComponentName
       type: string
-      default: registry.stage.redhat.io/mta/mta-ops-rhel9:mta-ops-container-8.3.3-202610212123.p2.g402d9e1.assembly.stream.el9
-      description: MTA-Ops image pullspec to extract.
+      default: mta-8-3-mta-rsync-transfer
   workspaces:
     - name: shared-workspace
   results:
@@ -51,7 +48,26 @@ spec:
     - name: testStatus
       value: $(tasks.run-tier0.results.testStatus)
   tasks:
+    - name: extract-image-references
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: tasks/mta-ops-extract-image-references.yaml
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: mtaOpsComponentName
+          value: $(params.mtaOpsComponentName)
+        - name: rsyncComponentName
+          value: $(params.rsyncComponentName)
     - name: lease-source
+      runAfter:
+        - extract-image-references
       taskRef:
         resolver: git
         params:
@@ -229,7 +245,7 @@ spec:
             value: tasks/mta-ops-extract-image.yaml
       params:
         - name: imagePullspec
-          value: $(params.mtaOpsImagePullspec)
+          value: $(tasks.extract-image-references.results.mtaOpsImagePullspec)
         - name: kubeconfigPath
           value: $(tasks.merge-kubeconfigs.results.kubeconfigPath)
       workspaces:
@@ -255,7 +271,7 @@ spec:
         - name: k8sDeployBinaryPath
           value: $(tasks.prepare-tools.results.k8sDeployBinaryPath)
         - name: mtaOpsRsyncImage
-          value: $(params.mtaOpsRsyncImage)
+          value: $(tasks.extract-image-references.results.mtaOpsRsyncImage)
         - name: kubeconfigPath
           value: $(tasks.merge-kubeconfigs.results.kubeconfigPath)
       workspaces:

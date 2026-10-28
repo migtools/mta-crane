@@ -1,0 +1,59 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-extract-image-references
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: snapshot-metadata
+spec:
+  description: Extract the MTA-Ops and rsync image references from the Konflux Snapshot.
+  params:
+    - name: SNAPSHOT
+      type: string
+      description: Konflux Snapshot JSON.
+    - name: mtaOpsComponentName
+      type: string
+      default: mta-8-3-mta-ops
+    - name: rsyncComponentName
+      type: string
+      default: mta-8-3-mta-rsync-transfer
+  results:
+    - name: mtaOpsImagePullspec
+      description: MTA-Ops image pullspec from the Snapshot.
+    - name: mtaOpsRsyncImage
+      description: Rsync transfer image pullspec from the Snapshot.
+  steps:
+    - name: extract
+      image: quay.io/konflux-ci/konflux-test:stable
+      env:
+        - name: SNAPSHOT_JSON
+          value: $(params.SNAPSHOT)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        extract_component_image() {
+          local component_name="$1"
+          printf '%s' "${SNAPSHOT_JSON}" | jq -r --arg name "${component_name}" \
+            '.components[] | select(.name == $name) | .containerImage' | head -n 1
+        }
+
+        test -n "${SNAPSHOT_JSON}"
+        mta_ops_image=$(extract_component_image "$(params.mtaOpsComponentName)")
+        rsync_image=$(extract_component_image "$(params.rsyncComponentName)")
+
+        if [ -z "${mta_ops_image}" ] || [ "${mta_ops_image}" = "null" ]; then
+          echo "ERROR: Snapshot does not contain component $(params.mtaOpsComponentName)"
+          printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
+          exit 1
+        fi
+        if [ -z "${rsync_image}" ] || [ "${rsync_image}" = "null" ]; then
+          echo "ERROR: Snapshot does not contain component $(params.rsyncComponentName)"
+          printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
+          exit 1
+        fi
+
+        echo "MTA-Ops image: ${mta_ops_image}"
+        echo "Rsync image: ${rsync_image}"
+        printf '%s' "${mta_ops_image}" > "$(results.mtaOpsImagePullspec.path)"
+        printf '%s' "${rsync_image}" > "$(results.mtaOpsRsyncImage.path)"

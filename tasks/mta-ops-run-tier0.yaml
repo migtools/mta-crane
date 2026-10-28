@@ -26,13 +26,15 @@ spec:
   results:
     - name: testStatus
       description: Test result, PASSED or FAILED.
+    - name: TEST_OUTPUT
+      description: Standardized Konflux test result.
   steps:
     - name: run-test
       image: quay.io/migqe/migqe-ginkgo:latest
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        trap 'printf FAILED > "$(results.testStatus.path)"' ERR
+        trap 'printf FAILED > "$(results.testStatus.path)"; printf '\''{"result":"FAILURE","failures":1,"successes":0,"warnings":0}'\'' > "$(results.TEST_OUTPUT.path)"' ERR
 
         TEST_REPO_PATH="$(params.testRepositoryPath)"
         MTA_OPS_BIN="$(params.mtaOpsBinaryPath)"
@@ -70,3 +72,4 @@ spec:
           --verbose-logs
 
         printf PASSED > "$(results.testStatus.path)"
+        printf '{"result":"SUCCESS","failures":0,"successes":1,"warnings":0}' > "$(results.TEST_OUTPUT.path)"
