@@ -28,12 +28,6 @@ spec:
     - name: ocpctlSecretKey
       type: string
       default: api-key
-    - name: mtaOpsComponentName
-      type: string
-      default: mta-8-3-mta-ops
-    - name: rsyncComponentName
-      type: string
-      default: mta-8-3-mta-rsync-transfer
   workspaces:
     - name: shared-workspace
   results:
@@ -61,10 +55,6 @@ spec:
       params:
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
-        - name: mtaOpsComponentName
-          value: $(params.mtaOpsComponentName)
-        - name: rsyncComponentName
-          value: $(params.rsyncComponentName)
     - name: lease-source
       runAfter:
         - extract-image-references

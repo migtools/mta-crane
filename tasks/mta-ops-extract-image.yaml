@@ -18,15 +18,26 @@ spec:
     - name: sourceContext
       type: string
       default: src
+    - name: registryPullSecretName
+      type: string
+      default: registry-pull-secrets
   workspaces:
     - name: shared-workspace
       description: Workspace where the extracted mta-ops binary is written.
   results:
     - name: mtaOpsBinaryPath
       description: Path to the extracted mta-ops binary.
+  volumes:
+    - name: registry-pull-secret
+      secret:
+        secretName: $(params.registryPullSecretName)
+        optional: true
   steps:
     - name: extract
       image: quay.io/migqe/migqe-ginkgo:latest
+      volumeMounts:
+        - name: registry-pull-secret
+          mountPath: /registry-pull-secret
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -47,12 +58,15 @@ spec:
         chmod 0777 "${OUTPUT_DIR}"
 
         registry_config_arg=()
+        if [ -s /registry-pull-secret/.dockerconfigjson ]; then
+          registry_config_arg=(--registry-config=/registry-pull-secret/.dockerconfigjson)
+        fi
         pull_secret_b64=$(oc --kubeconfig="${KUBECONFIG_PATH}" \
           --context="$(params.sourceContext)" \
           get secret/pull-secret -n openshift-config \
           -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null || true)
 
-        if [ -n "${pull_secret_b64}" ]; then
+        if [ ${#registry_config_arg[@]} -eq 0 ] && [ -n "${pull_secret_b64}" ]; then
           printf '%s' "${pull_secret_b64}" | base64 -d > "${REGISTRY_AUTH_FILE}"
           chmod 600 "${REGISTRY_AUTH_FILE}"
           registry_config_arg=(--registry-config="${REGISTRY_AUTH_FILE}")
