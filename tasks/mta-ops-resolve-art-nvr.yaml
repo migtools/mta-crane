@@ -7,12 +7,15 @@ metadata:
     app.kubernetes.io/component: snapshot-metadata
 spec:
   description: >-
-    Optionally resolve the MTA-Ops Snapshot image digest to an ART NVR for
-    logging. ART lookup is informational and never blocks the test pipeline.
+    Optionally resolve the MTA-Ops and rsync Snapshot image digests to ART NVRs
+    for logging. ART lookup is informational and never blocks the test pipeline.
   params:
     - name: mtaOpsImagePullspec
       type: string
       description: Stage or Konflux MTA-Ops image pullspec.
+    - name: mtaOpsRsyncImagePullspec
+      type: string
+      description: Stage or Konflux rsync image pullspec.
     - name: artBuildHistoryUrl
       type: string
       default: ""
@@ -24,6 +27,8 @@ spec:
   results:
     - name: mtaOpsNvr
       description: Resolved ART NVR, or unknown when unavailable.
+    - name: mtaOpsRsyncNvr
+      description: Resolved rsync ART NVR, or unknown when unavailable.
   steps:
     - name: resolve
       image: quay.io/konflux-ci/konflux-test:stable
@@ -33,6 +38,8 @@ spec:
 
         result_path="$(results.mtaOpsNvr.path)"
         printf '%s' unknown > "${result_path}"
+        rsync_result_path="$(results.mtaOpsRsyncNvr.path)"
+        printf '%s' unknown > "${rsync_result_path}"
         art_url="$(params.artBuildHistoryUrl)"
         art_group="$(params.artGroup)"
 
@@ -41,18 +48,10 @@ spec:
           exit 0
         fi
 
-        digest="$(params.mtaOpsImagePullspec)"
-        digest="${digest##*@}"
-        if [[ "${digest}" != sha256:* ]]; then
-          echo "ART lookup skipped: image reference is not digest-pinned"
-          exit 0
-        fi
-
         start_date=$(date -u -d '90 days ago' +%F 2>/dev/null || date -u -v-90d +%F)
         end_date=$(date -u +%F)
-        search_url="${art_url%/}/search?group=${art_group}&assembly=stream&outcome=Success&engine=konflux&dateRange=${start_date}+to+${end_date}&name=mta-ops"
+        search_url="${art_url%/}/search?group=${art_group}&assembly=stream&outcome=Success&engine=konflux&dateRange=${start_date}+to+${end_date}"
 
-        echo "Looking up MTA-Ops NVR for image digest ${digest}"
         response=$(curl -fsS --max-time 30 \
           -H 'X-Requested-With: XMLHttpRequest' \
           "${search_url}" 2>/dev/null) || {
@@ -60,17 +59,35 @@ spec:
           exit 0
         }
 
-        nvr=$(printf '%s' "${response}" | jq -r --arg digest "${digest}" '
-          [.builds[]?
-           | select(.name == "mta-ops")
-           | select((.outcome // "" | ascii_downcase) == "success")
-           | select((.image_pullspec // "") | endswith("@" + $digest))
-           | .nvr] | first // empty')
+        resolve_nvr() {
+          local label="$1"
+          local art_name="$2"
+          local image_pullspec="$3"
+          local output_path="$4"
+          local digest="${image_pullspec##*@}"
 
-        if [ -z "${nvr}" ]; then
-          echo "ART lookup found no successful MTA-Ops NVR for ${digest}"
-          exit 0
-        fi
+          if [[ "${digest}" != sha256:* ]]; then
+            echo "ART lookup skipped for ${label}: image is not digest-pinned"
+            return 0
+          fi
 
-        echo "Resolved MTA-Ops ART NVR: ${nvr}"
-        printf '%s' "${nvr}" > "${result_path}"
+          nvr=$(printf '%s' "${response}" | jq -r \
+            --arg name "${art_name}" --arg digest "${digest}" '
+              [.builds[]?
+               | select(.name == $name)
+               | select((.outcome // "" | ascii_downcase) == "success")
+               | select((.image_pullspec // "") | endswith("@" + $digest))
+               | .nvr] | first // empty')
+
+          if [ -z "${nvr}" ]; then
+            echo "ART lookup found no successful ${label} NVR for ${digest}"
+            return 0
+          fi
+
+          echo "Resolved ${label} ART NVR: ${nvr}"
+          printf '%s' "${nvr}" > "${output_path}"
+        }
+
+        resolve_nvr "MTA-Ops" "mta-ops" "$(params.mtaOpsImagePullspec)" "${result_path}"
+        resolve_nvr "MTA-Ops rsync" "mta-rsync-transfer" \
+          "$(params.mtaOpsRsyncImagePullspec)" "${rsync_result_path}"

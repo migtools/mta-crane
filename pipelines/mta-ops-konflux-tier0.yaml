@@ -49,6 +49,8 @@ spec:
       value: $(tasks.verify-clusters.results.targetVersion)
     - name: mtaOpsNvr
       value: $(tasks.resolve-art-nvr.results.mtaOpsNvr)
+    - name: mtaOpsRsyncNvr
+      value: $(tasks.resolve-art-nvr.results.mtaOpsRsyncNvr)
     - name: testStatus
       value: $(tasks.run-tier0.results.testStatus)
   tasks:
@@ -80,6 +82,8 @@ spec:
       params:
         - name: mtaOpsImagePullspec
           value: $(tasks.extract-image-references.results.mtaOpsImagePullspec)
+        - name: mtaOpsRsyncImagePullspec
+          value: $(tasks.extract-image-references.results.mtaOpsRsyncImage)
         - name: artBuildHistoryUrl
           value: $(params.artBuildHistoryUrl)
         - name: artGroup
