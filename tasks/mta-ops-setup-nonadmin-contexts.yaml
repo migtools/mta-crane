@@ -86,6 +86,24 @@ spec:
         SOURCE_DEV_KUBECONFIG="${KUBECONFIG_DIR}/source-dev.kubeconfig"
         TARGET_DEV_KUBECONFIG="${KUBECONFIG_DIR}/target-dev.kubeconfig"
 
+        wait_for_admin_access() {
+          local kubeconfig="$1"
+          local cluster_name="$2"
+
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if KUBECONFIG="${kubeconfig}" oc whoami >/dev/null 2>&1; then
+              echo "Admin access is ready for ${cluster_name}"
+              return 0
+            fi
+            echo "Waiting for admin access to ${cluster_name} (${attempt}/12)"
+            sleep 15
+          done
+
+          echo "ERROR: admin access did not become ready for ${cluster_name}"
+          KUBECONFIG="${kubeconfig}" oc whoami || true
+          return 1
+        }
+
         configure_cluster() {
           local kubeconfig="$1"
           local idp_name="$2"
@@ -116,6 +134,9 @@ spec:
             -n openshift-authentication \
             --timeout=600s
         }
+
+        wait_for_admin_access "${SOURCE_ADMIN_KUBECONFIG}" source
+        wait_for_admin_access "${TARGET_ADMIN_KUBECONFIG}" target
 
         configure_cluster "${SOURCE_ADMIN_KUBECONFIG}" \
           "htpasswd-src" "${HTPASSWD_DIR}/source"
