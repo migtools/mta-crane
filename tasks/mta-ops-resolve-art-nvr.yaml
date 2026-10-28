@@ -1,0 +1,75 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-resolve-art-nvr
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: snapshot-metadata
+spec:
+  description: >-
+    Optionally resolve the MTA-Ops Snapshot image digest to an ART NVR for
+    logging. ART lookup is informational and never blocks the test pipeline.
+  params:
+    - name: mtaOpsImagePullspec
+      type: string
+      description: Stage or Konflux MTA-Ops image pullspec.
+    - name: artBuildHistoryUrl
+      type: string
+      default: ""
+      description: ART Build History base URL; empty disables lookup.
+    - name: artGroup
+      type: string
+      default: mta-8.3
+      description: ART build group.
+  results:
+    - name: mtaOpsNvr
+      description: Resolved ART NVR, or unknown when unavailable.
+  steps:
+    - name: resolve
+      image: quay.io/konflux-ci/konflux-test:stable
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        result_path="$(results.mtaOpsNvr.path)"
+        printf '%s' unknown > "${result_path}"
+        art_url="$(params.artBuildHistoryUrl)"
+
+        if [ -z "${art_url}" ]; then
+          echo "ART lookup skipped: artBuildHistoryUrl was not provided"
+          exit 0
+        fi
+
+        digest="$(params.mtaOpsImagePullspec)"
+        digest="${digest##*@}"
+        if [[ "${digest}" != sha256:* ]]; then
+          echo "ART lookup skipped: image reference is not digest-pinned"
+          exit 0
+        fi
+
+        start_date=$(date -u -d '90 days ago' +%F 2>/dev/null || date -u -v-90d +%F)
+        end_date=$(date -u +%F)
+        search_url="${art_url%/}/search?group=$(params.artGroup)&assembly=stream&outcome=Success&engine=konflux&dateRange=${start_date}+to+${end_date}&name=mta-ops"
+
+        echo "Looking up MTA-Ops NVR for image digest ${digest}"
+        response=$(curl -fsS --max-time 30 \
+          -H 'X-Requested-With: XMLHttpRequest' \
+          "${search_url}" 2>/dev/null) || {
+          echo "ART lookup skipped: ART API was unavailable"
+          exit 0
+        }
+
+        nvr=$(printf '%s' "${response}" | jq -r --arg digest "${digest}" '
+          [.builds[]?
+           | select(.name == "mta-ops")
+           | select((.outcome // "" | ascii_downcase) == "success")
+           | select((.image_pullspec // "") | endswith("@" + $digest))
+           | .nvr] | first // empty')
+
+        if [ -z "${nvr}" ]; then
+          echo "ART lookup found no successful MTA-Ops NVR for ${digest}"
+          exit 0
+        fi
+
+        echo "Resolved MTA-Ops ART NVR: ${nvr}"
+        printf '%s' "${nvr}" > "${result_path}"
