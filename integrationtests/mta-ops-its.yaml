@@ -1,0 +1,21 @@
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  name: mta-ops-test-its
+  labels:
+    test.appstudio.openshift.io/optional: "true"
+spec:
+  application: mta-8-3
+  contexts:
+    - name: component_mta-8-3-mta-ops
+      description: Run MTA-Ops Tier 0 when the MTA-Ops component is built
+  resolverRef:
+    resolver: git
+    resourceKind: pipelinerun
+    params:
+      - name: url
+        value: https://github.com/migtools/mta-crane
+      - name: revision
+        value: konflux-its
+      - name: pathInRepo
+        value: pipelineruns/mta-ops-konflux-tier0.yaml
