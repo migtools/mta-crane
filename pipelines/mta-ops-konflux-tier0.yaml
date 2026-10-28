@@ -295,6 +295,8 @@ spec:
       params:
         - name: clusterId
           value: $(tasks.lease-source.results.clusterId)
+        - name: delayBeforeRelease
+          value: "0"
         - name: ocpctlUrl
           value: $(params.ocpctlUrl)
         - name: ocpctlSecretName
@@ -318,6 +320,8 @@ spec:
       params:
         - name: clusterId
           value: $(tasks.lease-target.results.clusterId)
+        - name: delayBeforeRelease
+          value: "20"
         - name: ocpctlUrl
           value: $(params.ocpctlUrl)
         - name: ocpctlSecretName
