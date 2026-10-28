@@ -44,19 +44,33 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
 
-        response=$(curl -sS -w '\n%{http_code}' --insecure \
-          -X POST "$(params.ocpctlUrl)/pools/$(params.poolName)/lease" \
-          -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
-          -H 'Content-Type: application/json' \
-          -d '{"lease_duration_hours": $(params.leaseDuration), "purpose": "$(params.purpose)"}')
-        http_code=$(printf '%s\n' "${response}" | tail -n 1)
-        body=$(printf '%s\n' "${response}" | sed '$d')
+        attempt=1
+        max_attempts=6
+        while true; do
+          response=$(curl -sS -w '\n%{http_code}' --insecure \
+            -X POST "$(params.ocpctlUrl)/pools/$(params.poolName)/lease" \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d '{"lease_duration_hours": $(params.leaseDuration), "purpose": "$(params.purpose)"}' || true)
+          http_code=$(printf '%s\n' "${response}" | tail -n 1)
+          body=$(printf '%s\n' "${response}" | sed '$d')
 
-        if [ "${http_code}" != "200" ] && [ "${http_code}" != "201" ]; then
+          if [ "${http_code}" = "200" ] || [ "${http_code}" = "201" ]; then
+            break
+          fi
+
+          if [ "${http_code}" = "429" ] && [ "${attempt}" -lt "${max_attempts}" ]; then
+            delay=$((attempt * 15))
+            echo "OCPCTL rate limited the lease request; retrying in ${delay}s (attempt ${attempt}/${max_attempts})"
+            sleep "${delay}"
+            attempt=$((attempt + 1))
+            continue
+          fi
+
           echo "OCPCTL lease failed with HTTP ${http_code}"
           printf '%s\n' "${body}"
           exit 1
-        fi
+        done
 
         cluster_id=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("cluster_id", ""))')
         cluster_name=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("cluster_name", ""))')

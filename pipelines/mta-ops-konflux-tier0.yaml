@@ -75,6 +75,8 @@ spec:
         - name: ocpctlSecretKey
           value: $(params.ocpctlSecretKey)
     - name: lease-target
+      runAfter:
+        - lease-source
       taskRef:
         resolver: git
         params:
