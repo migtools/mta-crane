@@ -33,10 +33,6 @@ spec:
       env:
         - name: SNAPSHOT_JSON
           value: $(params.SNAPSHOT)
-        - name: COMPONENT_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.labels['appstudio.openshift.io/component']
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -74,32 +70,37 @@ spec:
         }
 
         test -n "${SNAPSHOT_JSON}"
-        test -n "${COMPONENT_NAME}"
-        case "${COMPONENT_NAME}" in
-          *-mta-ops)
-            rsync_component_name="${COMPONENT_NAME%-mta-ops}-mta-rsync-transfer"
-            ;;
-          *)
-            echo "ERROR: ITS component is not an MTA-Ops component: ${COMPONENT_NAME}"
-            exit 1
-            ;;
-        esac
+        mta_ops_component_name=$(printf '%s' "${SNAPSHOT_JSON}" | jq -r \
+          '.components[].name | select(endswith("-mta-ops"))' | head -n 1)
+        rsync_component_name=$(printf '%s' "${SNAPSHOT_JSON}" | jq -r \
+          '.components[].name | select(endswith("-mta-rsync-transfer"))' | head -n 1)
 
-        mta_ops_image=$(extract_component_image "${COMPONENT_NAME}")
+        if [ -z "${mta_ops_component_name}" ]; then
+          echo "ERROR: Snapshot does not contain an MTA-Ops component"
+          printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
+          exit 1
+        fi
+        if [ -z "${rsync_component_name}" ]; then
+          echo "ERROR: Snapshot does not contain an rsync transfer component"
+          printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
+          exit 1
+        fi
+
+        mta_ops_image=$(extract_component_image "${mta_ops_component_name}")
         rsync_image=$(extract_component_image "${rsync_component_name}")
 
         if [ -z "${mta_ops_image}" ] || [ "${mta_ops_image}" = "null" ]; then
-          echo "ERROR: Snapshot does not contain component ${COMPONENT_NAME}"
+          echo "ERROR: Snapshot component ${mta_ops_component_name} has no image"
           printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
           exit 1
         fi
         if [ -z "${rsync_image}" ] || [ "${rsync_image}" = "null" ]; then
-          echo "ERROR: Snapshot does not contain component ${rsync_component_name}"
+          echo "ERROR: Snapshot component ${rsync_component_name} has no image"
           printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
           exit 1
         fi
 
-        mta_ops_stage_image=$(convert_to_stage_pullspec "${COMPONENT_NAME}" "${mta_ops_image}")
+        mta_ops_stage_image=$(convert_to_stage_pullspec "${mta_ops_component_name}" "${mta_ops_image}")
         rsync_stage_image=$(convert_to_stage_pullspec "${rsync_component_name}" "${rsync_image}")
 
         registry_config_arg=()
