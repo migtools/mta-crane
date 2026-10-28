@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: mta-ops
     app.kubernetes.io/component: e2e-test
 spec:
-  description: Run the temporary MTA-805 test from the prepared mta-8.3 test repository.
+  description: Run the complete Tier 0 suite from the prepared mta-8.3 test repository.
   params:
     - name: testRepositoryPath
       type: string
@@ -57,7 +57,6 @@ spec:
 
         cd "${TEST_REPO_PATH}"
         ginkgo run -v -r --procs=4 \
-          --focus='\[MTA-805\]' \
           --timeout=4h \
           --junit-report="${TEST_REPO_PATH}/reports/junitreport.xml" \
           --keep-going \
