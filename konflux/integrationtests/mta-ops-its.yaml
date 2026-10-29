@@ -11,6 +11,8 @@ spec:
       value: ""
     - name: artGroup
       value: ""
+    - name: ocpctlUrl
+      value: ""
   contexts:
     - name: component_mta-8-3-mta-ops
       description: Run MTA-Ops Tier 0 when the MTA-Ops component is built
@@ -23,4 +25,4 @@ spec:
       - name: revision
         value: konflux-its
       - name: pathInRepo
-        value: pipelineruns/mta-ops-konflux-tier0.yaml
+        value: konflux/pipelineruns/mta-ops-konflux-tier0.yaml

@@ -21,7 +21,7 @@ spec:
       default: "4"
     - name: ocpctlUrl
       type: string
-      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+      description: OCPCTL API base URL supplied by the ITS configuration.
     - name: ocpctlSecretName
       type: string
       default: ocpctl-ci-key
@@ -63,7 +63,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-extract-image-references.yaml
+            value: konflux/tasks/mta-ops-extract-image-references.yaml
       params:
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
@@ -78,7 +78,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-resolve-art-nvr.yaml
+            value: konflux/tasks/mta-ops-resolve-art-nvr.yaml
       params:
         - name: mtaOpsImagePullspec
           value: $(tasks.extract-image-references.results.mtaOpsImagePullspec)
@@ -99,7 +99,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-ocpctl-lease-cluster.yaml
+            value: konflux/tasks/mta-ops-ocpctl-lease-cluster.yaml
       params:
         - name: poolName
           value: $(params.poolName)
@@ -124,7 +124,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-ocpctl-lease-cluster.yaml
+            value: konflux/tasks/mta-ops-ocpctl-lease-cluster.yaml
       params:
         - name: poolName
           value: $(params.poolName)
@@ -149,7 +149,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-ocpctl-download-kubeconfig.yaml
+            value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
       params:
         - name: clusterId
           value: $(tasks.lease-source.results.clusterId)
@@ -175,7 +175,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-ocpctl-download-kubeconfig.yaml
+            value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
       params:
         - name: clusterId
           value: $(tasks.lease-target.results.clusterId)
@@ -202,7 +202,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-merge-kubeconfigs.yaml
+            value: konflux/tasks/mta-ops-merge-kubeconfigs.yaml
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
@@ -217,7 +217,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-setup-nonadmin-contexts.yaml
+            value: konflux/tasks/mta-ops-setup-nonadmin-contexts.yaml
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
@@ -232,7 +232,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-verify-contexts.yaml
+            value: konflux/tasks/mta-ops-verify-contexts.yaml
       params:
         - name: kubeconfigPath
           value: $(tasks.merge-kubeconfigs.results.kubeconfigPath)
@@ -250,7 +250,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-prepare-tools.yaml
+            value: konflux/tasks/mta-ops-prepare-tools.yaml
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
@@ -265,7 +265,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-extract-image.yaml
+            value: konflux/tasks/mta-ops-extract-image.yaml
       params:
         - name: imagePullspec
           value: $(tasks.extract-image-references.results.mtaOpsImagePullspec)
@@ -285,7 +285,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-run-tier0.yaml
+            value: konflux/tasks/mta-ops-run-tier0.yaml
       params:
         - name: testRepositoryPath
           value: $(tasks.prepare-tools.results.testRepositoryPath)
@@ -314,7 +314,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-ocpctl-release-cluster.yaml
+            value: konflux/tasks/mta-ops-ocpctl-release-cluster.yaml
       params:
         - name: clusterId
           value: $(tasks.lease-source.results.clusterId)
@@ -339,7 +339,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: tasks/mta-ops-ocpctl-release-cluster.yaml
+            value: konflux/tasks/mta-ops-ocpctl-release-cluster.yaml
       params:
         - name: clusterId
           value: $(tasks.lease-target.results.clusterId)

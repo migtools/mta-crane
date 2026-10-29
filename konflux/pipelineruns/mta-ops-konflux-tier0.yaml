@@ -11,7 +11,7 @@ spec:
       - name: revision
         value: konflux-its
       - name: pathInRepo
-        value: pipelines/mta-ops-konflux-tier0.yaml
+        value: konflux/pipelines/mta-ops-konflux-tier0.yaml
   workspaces:
     - name: shared-workspace
       volumeClaimTemplate:
