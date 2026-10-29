@@ -89,7 +89,6 @@ values in the ITS, PipelineRun wrapper, and Pipeline Task resolvers together.
 
 The following values are intentionally not stored in this repository:
 
-- OCPCTL API URL.
 - OCPCTL API key.
 - Registry credentials.
 - Cluster URLs or passwords.
@@ -98,7 +97,7 @@ Configure them in the Konflux ITS/PipelineRun environment:
 
 | Value | Purpose |
 | --- | --- |
-| `ocpctlUrl` | OCPCTL API base URL |
+| `ocpctlUrl` | OCPCTL API base URL; defaults to the shared OCPCTL service endpoint |
 | `ocpctlSecretName` | Kubernetes Secret containing the API key; default name is `ocpctl-ci-key` |
 | `ocpctlSecretKey` | Secret key containing the API key; default is `api-key` |
 | `artBuildHistoryUrl` | Optional ART API URL for NVR logging |
@@ -115,7 +114,8 @@ Git.
 3. Use `resourceKind: pipelinerun` because the wrapper binds `shared-workspace`.
 4. Set the Git resolver revision to `konflux-its`.
 5. Set the path to `konflux/pipelineruns/mta-ops-konflux-tier0.yaml`.
-6. Provide `ocpctlUrl` and the OCPCTL Secret in the tenant configuration.
+6. Create the OCPCTL Secret in the tenant configuration; override `ocpctlUrl`
+   only when using a different OCPCTL service.
 7. Optionally provide `artBuildHistoryUrl` and `artGroup` to log NVRs.
 8. Trigger a new MTA-Ops component build or retest after changing the ITS.
 

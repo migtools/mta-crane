@@ -19,7 +19,8 @@ spec:
       default: MTA-Ops Tier 0 testing
     - name: ocpctlUrl
       type: string
-      description: OCPCTL API base URL supplied by the ITS configuration.
+      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+      description: OCPCTL API base URL.
     - name: ocpctlSecretName
       type: string
       default: ocpctl-ci-key
