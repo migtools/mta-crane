@@ -149,57 +149,37 @@ spec:
         target_started=false
 
         delay="$(params.targetStartDelaySeconds)"
-        elapsed=0
-        while [ "${elapsed}" -lt "${delay}" ]; do
-          if ! kill -0 "${source_pid}" 2>/dev/null; then
-            set +e
-            wait "${source_pid}"
-            source_status=$?
-            set -e
-            [ "${source_status}" -eq 0 ] || exit "${source_status}"
-            break
-          fi
-          sleep 1
-          elapsed=$((elapsed + 1))
-        done
+        sleep "${delay}"
 
         provision_one tgt "$(params.targetVersion)" &
         target_pid=$!
-        target_started=true
-
-        while true; do
-          source_done=false
-          target_done=false
-          kill -0 "${source_pid}" 2>/dev/null || source_done=true
-          kill -0 "${target_pid}" 2>/dev/null || target_done=true
-
-          if [ "${source_done}" = true ]; then
+        source_done=false
+        target_done=false
+        source_status=1
+        target_status=1
+        while [ "${source_done}" = false ] || [ "${target_done}" = false ]; do
+          if [ "${source_done}" = false ] && ! kill -0 "${source_pid}" 2>/dev/null; then
             set +e
             wait "${source_pid}"
             source_status=$?
             set -e
-            if [ "${source_status}" -ne 0 ]; then
-              kill "${target_pid}" 2>/dev/null || true
-              wait "${target_pid}" 2>/dev/null || true
-              exit "${source_status}"
-            fi
+            source_done=true
+            echo "Source provisioning completed with status ${source_status}"
           fi
-
-          if [ "${target_done}" = true ]; then
+          if [ "${target_done}" = false ] && ! kill -0 "${target_pid}" 2>/dev/null; then
             set +e
             wait "${target_pid}"
             target_status=$?
             set -e
-            if [ "${target_status}" -ne 0 ]; then
-              kill "${source_pid}" 2>/dev/null || true
-              wait "${source_pid}" 2>/dev/null || true
-              exit "${target_status}"
-            fi
+            target_done=true
+            echo "Target provisioning completed with status ${target_status}"
           fi
-
           [ "${source_done}" = true ] && [ "${target_done}" = true ] && break
           sleep 5
         done
+
+        [ "${source_status}" -eq 0 ] || exit "${source_status}"
+        [ "${target_status}" -eq 0 ] || exit "${target_status}"
 
         printf '%s' "$(cat "${ID_DIR}/source.cluster-id")" > "$(results.sourceClusterId.path)"
         printf '%s' "$(cat "${ID_DIR}/target.cluster-id")" > "$(results.targetClusterId.path)"
