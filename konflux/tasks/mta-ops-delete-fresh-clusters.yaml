@@ -1,0 +1,51 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-delete-fresh-clusters
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: cluster-lifecycle
+spec:
+  description: Delete fresh OCPCTL clusters after an optional debugging delay.
+  params:
+    - name: sourceClusterId
+      type: string
+    - name: targetClusterId
+      type: string
+    - name: delaySeconds
+      type: string
+      default: "3600"
+    - name: ocpctlUrl
+      type: string
+      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+    - name: ocpctlSecretName
+      type: string
+      default: ocpctl-ci-key
+    - name: ocpctlSecretKey
+      type: string
+      default: api-key
+  steps:
+    - name: delete
+      image: quay.io/migqe/migqe-base:latest
+      env:
+        - name: OCPCTL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.ocpctlSecretName)
+              key: $(params.ocpctlSecretKey)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        sleep "$(params.delaySeconds)"
+        delete_cluster() {
+          local cluster_id="$1"
+          [ -n "${cluster_id}" ] || return 0
+          curl -fsS --insecure -X DELETE \
+            "$(params.ocpctlUrl)/clusters/${cluster_id}" \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" >/dev/null || true
+          echo "Delete requested for ${cluster_id}"
+        }
+
+        delete_cluster "$(params.sourceClusterId)"
+        delete_cluster "$(params.targetClusterId)"

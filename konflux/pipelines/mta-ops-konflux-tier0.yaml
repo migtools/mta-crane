@@ -13,12 +13,33 @@ spec:
     - name: SNAPSHOT
       type: string
       description: Konflux Snapshot JSON.
-    - name: poolName
+    - name: profile
       type: string
-      default: ci-sno-pool-1
-    - name: leaseDuration
+      default: aws-sno-ga
+    - name: sourceVersion
       type: string
-      default: "4"
+      default: "4.21"
+    - name: targetVersion
+      type: string
+      default: "4.22"
+    - name: region
+      type: string
+      default: us-east-1
+    - name: baseDomain
+      type: string
+      default: mg.dog8code.com
+    - name: team
+      type: string
+      default: CI-Automation
+    - name: costCenter
+      type: string
+      default: "773"
+    - name: ownerEmail
+      type: string
+      default: ""
+    - name: deleteDelaySeconds
+      type: string
+      default: "3600"
     - name: ocpctlUrl
       type: string
       default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
@@ -40,9 +61,9 @@ spec:
     - name: shared-workspace
   results:
     - name: sourceClusterId
-      value: $(tasks.lease-source.results.clusterId)
+      value: $(tasks.provision-fresh-clusters.results.sourceClusterId)
     - name: targetClusterId
-      value: $(tasks.lease-target.results.clusterId)
+      value: $(tasks.provision-fresh-clusters.results.targetClusterId)
     - name: sourceVersion
       value: $(tasks.verify-clusters.results.sourceVersion)
     - name: targetVersion
@@ -88,7 +109,7 @@ spec:
           value: $(params.artBuildHistoryUrl)
         - name: artGroup
           value: $(params.artGroup)
-    - name: lease-source
+    - name: provision-fresh-clusters
       runAfter:
         - resolve-art-nvr
       taskRef:
@@ -99,88 +120,24 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: konflux/tasks/mta-ops-ocpctl-lease-cluster.yaml
+            value: konflux/tasks/mta-ops-provision-fresh-clusters.yaml
       params:
-        - name: poolName
-          value: $(params.poolName)
-        - name: leaseDuration
-          value: $(params.leaseDuration)
-        - name: purpose
-          value: MTA-Ops Tier 0 source testing
-        - name: ocpctlUrl
-          value: $(params.ocpctlUrl)
-        - name: ocpctlSecretName
-          value: $(params.ocpctlSecretName)
-        - name: ocpctlSecretKey
-          value: $(params.ocpctlSecretKey)
-    - name: lease-target
-      runAfter:
-        - lease-source
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/migtools/mta-crane
-          - name: revision
-            value: konflux-its
-          - name: pathInRepo
-            value: konflux/tasks/mta-ops-ocpctl-lease-cluster.yaml
-      params:
-        - name: poolName
-          value: $(params.poolName)
-        - name: leaseDuration
-          value: $(params.leaseDuration)
-        - name: purpose
-          value: MTA-Ops Tier 0 target testing
-        - name: ocpctlUrl
-          value: $(params.ocpctlUrl)
-        - name: ocpctlSecretName
-          value: $(params.ocpctlSecretName)
-        - name: ocpctlSecretKey
-          value: $(params.ocpctlSecretKey)
-    - name: download-source-kubeconfig
-      runAfter:
-        - lease-source
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/migtools/mta-crane
-          - name: revision
-            value: konflux-its
-          - name: pathInRepo
-            value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
-      params:
-        - name: clusterId
-          value: $(tasks.lease-source.results.clusterId)
-        - name: outputFileName
-          value: source.kubeconfig
-        - name: ocpctlUrl
-          value: $(params.ocpctlUrl)
-        - name: ocpctlSecretName
-          value: $(params.ocpctlSecretName)
-        - name: ocpctlSecretKey
-          value: $(params.ocpctlSecretKey)
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
-    - name: download-target-kubeconfig
-      runAfter:
-        - lease-target
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/migtools/mta-crane
-          - name: revision
-            value: konflux-its
-          - name: pathInRepo
-            value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
-      params:
-        - name: clusterId
-          value: $(tasks.lease-target.results.clusterId)
-        - name: outputFileName
-          value: target.kubeconfig
+        - name: sourceVersion
+          value: $(params.sourceVersion)
+        - name: targetVersion
+          value: $(params.targetVersion)
+        - name: profile
+          value: $(params.profile)
+        - name: region
+          value: $(params.region)
+        - name: baseDomain
+          value: $(params.baseDomain)
+        - name: team
+          value: $(params.team)
+        - name: costCenter
+          value: $(params.costCenter)
+        - name: ownerEmail
+          value: $(params.ownerEmail)
         - name: ocpctlUrl
           value: $(params.ocpctlUrl)
         - name: ocpctlSecretName
@@ -192,8 +149,7 @@ spec:
           workspace: shared-workspace
     - name: merge-kubeconfigs
       runAfter:
-        - download-source-kubeconfig
-        - download-target-kubeconfig
+        - provision-fresh-clusters
       taskRef:
         resolver: git
         params:
@@ -316,11 +272,11 @@ spec:
         - name: shared-workspace
           workspace: shared-workspace
   finally:
-    - name: release-source
+    - name: delete-fresh-clusters
       when:
-        - input: $(tasks.lease-source.status)
+        - input: $(tasks.provision-fresh-clusters.status)
           operator: in
-          values: [Succeeded]
+          values: [Succeeded, Failed, Cancelled]
       taskRef:
         resolver: git
         params:
@@ -329,37 +285,14 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: konflux/tasks/mta-ops-ocpctl-release-cluster.yaml
+            value: konflux/tasks/mta-ops-delete-fresh-clusters.yaml
       params:
-        - name: clusterId
-          value: $(tasks.lease-source.results.clusterId)
-        - name: delayBeforeRelease
-          value: "0"
-        - name: ocpctlUrl
-          value: $(params.ocpctlUrl)
-        - name: ocpctlSecretName
-          value: $(params.ocpctlSecretName)
-        - name: ocpctlSecretKey
-          value: $(params.ocpctlSecretKey)
-    - name: release-target
-      when:
-        - input: $(tasks.lease-target.status)
-          operator: in
-          values: [Succeeded]
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/migtools/mta-crane
-          - name: revision
-            value: konflux-its
-          - name: pathInRepo
-            value: konflux/tasks/mta-ops-ocpctl-release-cluster.yaml
-      params:
-        - name: clusterId
-          value: $(tasks.lease-target.results.clusterId)
-        - name: delayBeforeRelease
-          value: "20"
+        - name: sourceClusterId
+          value: $(tasks.provision-fresh-clusters.results.sourceClusterId)
+        - name: targetClusterId
+          value: $(tasks.provision-fresh-clusters.results.targetClusterId)
+        - name: delaySeconds
+          value: $(params.deleteDelaySeconds)
         - name: ocpctlUrl
           value: $(params.ocpctlUrl)
         - name: ocpctlSecretName

@@ -13,9 +13,9 @@ konflux/
   tasks/
     mta-ops-extract-image-references.yaml
     mta-ops-resolve-art-nvr.yaml
-    mta-ops-ocpctl-lease-cluster.yaml
+    mta-ops-provision-fresh-clusters.yaml
     mta-ops-ocpctl-download-kubeconfig.yaml
-    mta-ops-ocpctl-release-cluster.yaml
+    mta-ops-delete-fresh-clusters.yaml
     mta-ops-merge-kubeconfigs.yaml
     mta-ops-setup-nonadmin-contexts.yaml
     mta-ops-verify-contexts.yaml
@@ -34,8 +34,8 @@ konflux/
 Konflux Snapshot
   -> extract MTA-Ops and rsync image references
   -> optional ART NVR lookup
-  -> lease source cluster
-  -> lease target cluster
+  -> provision source cluster (OCP 4.21)
+  -> provision target cluster (OCP 4.22)
   -> download both kubeconfigs
   -> merge src/tgt contexts
   -> create src-dev/tgt-dev contexts
@@ -43,7 +43,7 @@ Konflux Snapshot
   -> prepare tests and k8sdeploy
   -> extract MTA-Ops binary
   -> run Tier 0
-  -> release both clusters
+  -> delete both clusters after the debug delay
 ```
 
 The image-reference extraction runs before leasing clusters. It reads the
@@ -124,17 +124,23 @@ A new matching Snapshot is required.
 
 ## OCPCTL Cluster Access
 
-The pipeline uses the OCPCTL pool configured by `poolName`, currently
-`ci-sno-pool-1` by default. It leases two clusters and downloads kubeconfigs
-through OCPCTL instead of using inline `oc login` commands.
+The pipeline provisions two fresh clusters through OCPCTL using the
+`aws-sno-ga` profile, source version `4.21`, and target version `4.22`.
+Jenkins uses these ownership values for the flow:
 
-The source and target leases are serialized to reduce API rate limiting. Lease
-requests retry HTTP 429 responses. Release requests are staggered and retry
-HTTP 429 and transient 5xx responses.
+```text
+team: CI-Automation
+cost center: 773
+region: us-east-1
+```
+
+The owner is resolved from the authenticated OCPCTL user. Clusters are
+deleted in `finally` after the configured debug delay, which is one hour by
+default.
 
 The Task pods must be able to resolve and reach the OCPCTL endpoint. If the
-tenant cluster cannot resolve the internal OCPCTL hostname, leasing will fail
-before authentication.
+tenant cluster cannot resolve the internal OCPCTL hostname, provisioning will
+fail before authentication.
 
 ## Workspace And Cleanup
 
@@ -142,9 +148,10 @@ The PipelineRun wrapper creates a persistent `shared-workspace` PVC because
 Tasks run in separate pods. The workspace contains kubeconfigs, source files,
 tools, and test reports.
 
-Clusters are released in `finally`, including when the test fails. Completed
-PVC cleanup is still controlled by the platform retention policy and should be
-reviewed separately.
+Clusters are deleted in `finally`, including when provisioning or testing
+fails. The delete Task uses the cluster IDs returned by the provision Task.
+Completed PVC cleanup is still controlled by the platform retention policy and
+should be reviewed separately.
 
 ## Test Execution
 
