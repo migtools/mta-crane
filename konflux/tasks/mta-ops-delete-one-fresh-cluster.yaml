@@ -1,20 +1,21 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: mta-ops-delete-fresh-clusters
+  name: mta-ops-delete-one-fresh-cluster
   labels:
     app.kubernetes.io/name: mta-ops
     app.kubernetes.io/component: cluster-lifecycle
 spec:
-  description: Delete fresh OCPCTL clusters after an optional debugging delay.
+  description: Delete one fresh OCPCTL cluster after an optional debugging delay.
   params:
-    - name: sourceClusterId
-      type: string
-    - name: targetClusterId
+    - name: clusterId
       type: string
     - name: delaySeconds
       type: string
       default: "3600"
+    - name: additionalDelaySeconds
+      type: string
+      default: "0"
     - name: ocpctlUrl
       type: string
       default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
@@ -36,16 +37,11 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-
-        sleep "$(params.delaySeconds)"
-        delete_cluster() {
-          local cluster_id="$1"
-          [ -n "${cluster_id}" ] || return 0
-          curl -fsS --insecure -X DELETE \
-            "$(params.ocpctlUrl)/clusters/${cluster_id}" \
-            -H "Authorization: Bearer ${OCPCTL_API_KEY}" >/dev/null || true
-          echo "Delete requested for ${cluster_id}"
-        }
-
-        delete_cluster "$(params.sourceClusterId)"
-        delete_cluster "$(params.targetClusterId)"
+        cluster_id="$(params.clusterId)"
+        [ -n "${cluster_id}" ] || exit 0
+        total_delay=$(( $(params.delaySeconds) + $(params.additionalDelaySeconds) ))
+        sleep "${total_delay}"
+        curl -fsS --insecure -X DELETE \
+          "$(params.ocpctlUrl)/clusters/${cluster_id}" \
+          -H "Authorization: Bearer ${OCPCTL_API_KEY}" >/dev/null || true
+        echo "Delete requested for ${cluster_id}"
