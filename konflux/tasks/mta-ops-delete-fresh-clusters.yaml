@@ -1,0 +1,66 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-delete-fresh-clusters
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: cluster-lifecycle
+spec:
+  description: Delete both fresh OCPCTL clusters after an optional debug delay.
+  params:
+    - name: sourceClusterId
+      type: string
+    - name: targetClusterId
+      type: string
+    - name: delaySeconds
+      type: string
+      default: "3600"
+    - name: ocpctlUrl
+      type: string
+      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+    - name: ocpctlSecretName
+      type: string
+      default: ocpctl-ci-key
+    - name: ocpctlSecretKey
+      type: string
+      default: api-key
+  workspaces:
+    - name: shared-workspace
+  steps:
+    - name: delete
+      image: quay.io/migqe/migqe-base:latest
+      env:
+        - name: OCPCTL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.ocpctlSecretName)
+              key: $(params.ocpctlSecretKey)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        workspace_path="$(workspaces.shared-workspace.path)"
+        id_dir="${workspace_path}/.ocpctl"
+        source_id="$(params.sourceClusterId)"
+        target_id="$(params.targetClusterId)"
+        [ -n "${source_id}" ] || source_id=$(cat "${id_dir}/source.cluster-id" 2>/dev/null || true)
+        [ -n "${target_id}" ] || target_id=$(cat "${id_dir}/target.cluster-id" 2>/dev/null || true)
+
+        sleep "$(params.delaySeconds)"
+
+        delete_cluster() {
+          local cluster_id="$1"
+          [ -n "${cluster_id}" ] || return 0
+          curl -fsS --insecure -X DELETE \
+            "$(params.ocpctlUrl)/clusters/${cluster_id}" \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" >/dev/null || true
+          echo "Delete requested for ${cluster_id}"
+        }
+
+        delete_cluster "${source_id}" &
+        source_delete_pid=$!
+        sleep 30
+        delete_cluster "${target_id}" &
+        target_delete_pid=$!
+        wait "${source_delete_pid}" || true
+        wait "${target_delete_pid}" || true

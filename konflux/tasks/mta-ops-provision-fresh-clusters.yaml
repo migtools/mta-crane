@@ -1,0 +1,205 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-provision-fresh-clusters
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: cluster-lifecycle
+spec:
+  description: >-
+    Provision source and target OpenShift clusters in parallel through OCPCTL.
+    If either provision fails, stop the sibling process and let finally clean
+    up any cluster IDs already created.
+  params:
+    - name: runId
+      type: string
+    - name: sourceVersion
+      type: string
+      default: "4.21"
+    - name: targetVersion
+      type: string
+      default: "4.22"
+    - name: profile
+      type: string
+      default: aws-sno-ga
+    - name: region
+      type: string
+      default: us-east-1
+    - name: baseDomain
+      type: string
+      default: mg.dog8code.com
+    - name: team
+      type: string
+      default: CI-Automation
+    - name: costCenter
+      type: string
+      default: "773"
+    - name: ownerEmail
+      type: string
+      default: ""
+    - name: targetStartDelaySeconds
+      type: string
+      default: "30"
+    - name: ocpctlUrl
+      type: string
+      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+    - name: ocpctlSecretName
+      type: string
+      default: ocpctl-ci-key
+    - name: ocpctlSecretKey
+      type: string
+      default: api-key
+  workspaces:
+    - name: shared-workspace
+  results:
+    - name: sourceClusterId
+    - name: targetClusterId
+  steps:
+    - name: provision
+      image: quay.io/migqe/migqe-base:latest
+      env:
+        - name: OCPCTL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.ocpctlSecretName)
+              key: $(params.ocpctlSecretKey)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
+        KUBECONFIG_DIR="${WORKSPACE_PATH}/.kube"
+        ID_DIR="${WORKSPACE_PATH}/.ocpctl"
+        mkdir -p "${KUBECONFIG_DIR}" "${ID_DIR}"
+        : > "${ID_DIR}/source.cluster-id"
+        : > "${ID_DIR}/target.cluster-id"
+
+        owner="$(params.ownerEmail)"
+        if [ -z "${owner}" ]; then
+          owner=$(curl -fsS --insecure \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+            "$(params.ocpctlUrl)/auth/me" | \
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("user") or {}).get("email") or d.get("email") or "")')
+        fi
+        test -n "${owner}"
+
+        short_id=$(printf '%s' "$(params.runId)" | sha256sum | cut -c1-5)
+
+        provision_one() {
+          local role="$1"
+          local version="$2"
+          local cluster_name="mtaops-kflx-${short_id}-${role}"
+          local id_file="${ID_DIR}/${role}.cluster-id"
+          local kubeconfig_path="${KUBECONFIG_DIR}/${role}.kubeconfig"
+
+          response=$(curl -sS -w '\n%{http_code}' --insecure \
+            -X POST "$(params.ocpctlUrl)/clusters" \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"${cluster_name}\",\"platform\":\"aws\",\"cluster_type\":\"openshift\",\"version\":\"${version}\",\"profile\":\"$(params.profile)\",\"region\":\"$(params.region)\",\"base_domain\":\"$(params.baseDomain)\",\"owner\":\"${owner}\",\"team\":\"$(params.team)\",\"cost_center\":\"$(params.costCenter)\",\"ttl_hours\":4}" || true)
+          http_code=$(printf '%s\n' "${response}" | tail -n 1)
+          body=$(printf '%s\n' "${response}" | sed '$d')
+          if [ "${http_code}" != "201" ]; then
+            echo "OCPCTL create failed for ${role} with HTTP ${http_code}"
+            printf '%s\n' "${body}"
+            return 1
+          fi
+
+          cluster_id=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')
+          test -n "${cluster_id}"
+          printf '%s' "${cluster_id}" > "${id_file}"
+          echo "Created ${role} cluster ${cluster_name} (${cluster_id})"
+
+          elapsed=0
+          while [ "${elapsed}" -lt 5400 ]; do
+            status=$(curl -fsS --insecure \
+              -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+              "$(params.ocpctlUrl)/clusters/${cluster_id}" | \
+              python3 -c 'import json,sys; d=json.load(sys.stdin); print(str((d.get("cluster") or d).get("status", "")).upper())')
+            echo "${role} cluster status=${status} elapsed=${elapsed}s"
+            [ "${status}" = READY ] && break
+            if [[ "${status}" == "FAILED" || "${status}" == "DESTROY_FAILED" || "${status}" == "DESTROYED" || "${status}" == "DELETING" ]]; then
+              return 1
+            fi
+            sleep 30
+            elapsed=$((elapsed + 30))
+          done
+          [ "${status}" = READY ]
+
+          response=$(curl -fsS --insecure \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+            "$(params.ocpctlUrl)/clusters/${cluster_id}/kubeconfig/download-url")
+          download_url=$(printf '%s' "${response}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("download_url", ""))')
+          test -n "${download_url}"
+          if [[ "${download_url}" == /api/* ]]; then
+            base_url="$(params.ocpctlUrl)"
+            base_url="${base_url%%/api/*}"
+            curl -fsS --insecure -o "${kubeconfig_path}" \
+              -H "Authorization: Bearer ${OCPCTL_API_KEY}" "${base_url}${download_url}"
+          else
+            curl -fsS --insecure -o "${kubeconfig_path}" "${download_url}"
+          fi
+          chmod 600 "${kubeconfig_path}"
+          KUBECONFIG="${kubeconfig_path}" oc whoami >/dev/null
+        }
+
+        provision_one src "$(params.sourceVersion)" &
+        source_pid=$!
+        source_status=0
+        target_started=false
+
+        delay="$(params.targetStartDelaySeconds)"
+        elapsed=0
+        while [ "${elapsed}" -lt "${delay}" ]; do
+          if ! kill -0 "${source_pid}" 2>/dev/null; then
+            set +e
+            wait "${source_pid}"
+            source_status=$?
+            set -e
+            [ "${source_status}" -eq 0 ] || exit "${source_status}"
+            break
+          fi
+          sleep 1
+          elapsed=$((elapsed + 1))
+        done
+
+        provision_one tgt "$(params.targetVersion)" &
+        target_pid=$!
+        target_started=true
+
+        while true; do
+          source_done=false
+          target_done=false
+          kill -0 "${source_pid}" 2>/dev/null || source_done=true
+          kill -0 "${target_pid}" 2>/dev/null || target_done=true
+
+          if [ "${source_done}" = true ]; then
+            set +e
+            wait "${source_pid}"
+            source_status=$?
+            set -e
+            if [ "${source_status}" -ne 0 ]; then
+              kill "${target_pid}" 2>/dev/null || true
+              wait "${target_pid}" 2>/dev/null || true
+              exit "${source_status}"
+            fi
+          fi
+
+          if [ "${target_done}" = true ]; then
+            set +e
+            wait "${target_pid}"
+            target_status=$?
+            set -e
+            if [ "${target_status}" -ne 0 ]; then
+              kill "${source_pid}" 2>/dev/null || true
+              wait "${source_pid}" 2>/dev/null || true
+              exit "${target_status}"
+            fi
+          fi
+
+          [ "${source_done}" = true ] && [ "${target_done}" = true ] && break
+          sleep 5
+        done
+
+        printf '%s' "$(cat "${ID_DIR}/source.cluster-id")" > "$(results.sourceClusterId.path)"
+        printf '%s' "$(cat "${ID_DIR}/target.cluster-id")" > "$(results.targetClusterId.path)"

@@ -13,9 +13,9 @@ konflux/
   tasks/
     mta-ops-extract-image-references.yaml
     mta-ops-resolve-art-nvr.yaml
-    mta-ops-provision-one-fresh-cluster.yaml
+    mta-ops-provision-fresh-clusters.yaml
     mta-ops-ocpctl-download-kubeconfig.yaml
-    mta-ops-delete-one-fresh-cluster.yaml
+    mta-ops-delete-fresh-clusters.yaml
     mta-ops-merge-kubeconfigs.yaml
     mta-ops-setup-nonadmin-contexts.yaml
     mta-ops-verify-contexts.yaml
