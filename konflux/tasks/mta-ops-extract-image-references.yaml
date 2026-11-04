@@ -74,17 +74,24 @@ spec:
           exit 1
         fi
 
-        registry_config_arg=()
+        registry_files=()
         for candidate in \
           /tekton/home/.docker/config.json \
           /tekton/creds/.dockerconfigjson \
+          /tekton/creds-secrets/*/.dockerconfigjson \
           /registry-pull-secret/.dockerconfigjson; do
           if [ -s "${candidate}" ]; then
-            registry_config_arg=(--registry-config="${candidate}")
-            echo "Using registry credentials from ${candidate}"
-            break
+            registry_files+=("${candidate}")
           fi
         done
+
+        registry_config_arg=()
+        if [ "${#registry_files[@]}" -gt 0 ]; then
+          jq -s 'reduce .[] as $item ({"auths": {}}; .auths += ($item.auths // {}))' \
+            "${registry_files[@]}" > /tmp/merged-registry-config.json
+          registry_config_arg=(--registry-config=/tmp/merged-registry-config.json)
+          echo "Using ${#registry_files[@]} Konflux registry credential file(s)"
+        fi
 
         echo "Verifying MTA-Ops image: ${mta_ops_image}"
         oc image info "${mta_ops_image}" --filter-by-os linux/amd64 \
