@@ -52,11 +52,10 @@ Konflux `SNAPSHOT` parameter and locates:
 - A component whose name ends in `-mta-ops`.
 - A component whose name ends in `-mta-rsync-transfer`.
 
-The Snapshot references are rewritten from the private Quay repository
-`art-images` to the shareable Quay repository `art-images-share`, while
-preserving the same digest. The `registry-pull-secrets` Secret is used to
-verify and extract those shareable images before cluster resources are
-allocated.
+The Snapshot image references are preserved unchanged, including their digest.
+Konflux-provided registry credentials are used to verify and extract the images
+before cluster resources are allocated. The same credentials are merged into
+the test-cluster pull secrets before workloads are started.
 
 ## IntegrationTestScenario
 

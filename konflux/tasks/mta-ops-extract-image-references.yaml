@@ -43,11 +43,6 @@ spec:
             '.components[] | select(.name == $name) | .containerImage' | head -n 1
         }
 
-        to_shareable_pullspec() {
-          local image="$1"
-          printf '%s' "${image/\/art-images@/\/art-images-share@}"
-        }
-
         test -n "${SNAPSHOT_JSON}"
         mta_ops_component_name=$(printf '%s' "${SNAPSHOT_JSON}" | jq -r \
           '.components[].name | select(endswith("-mta-ops"))' | head -n 1)
@@ -65,8 +60,8 @@ spec:
           exit 1
         fi
 
-        mta_ops_image=$(to_shareable_pullspec "$(extract_component_image "${mta_ops_component_name}")")
-        rsync_image=$(to_shareable_pullspec "$(extract_component_image "${rsync_component_name}")")
+        mta_ops_image=$(extract_component_image "${mta_ops_component_name}")
+        rsync_image=$(extract_component_image "${rsync_component_name}")
 
         if [ -z "${mta_ops_image}" ] || [ "${mta_ops_image}" = "null" ]; then
           echo "ERROR: Snapshot component ${mta_ops_component_name} has no image"
@@ -89,12 +84,6 @@ spec:
             registry_files+=("${candidate}")
           fi
         done
-        component_pull_secret=/tekton/creds-secrets/components-namespace-pull/.dockerconfigjson
-        if [ -s "${component_pull_secret}" ]; then
-          # Give the component-scoped Quay credential precedence over generic pull secrets.
-          registry_files+=("${component_pull_secret}")
-        fi
-
         registry_config_arg=()
         if [ "${#registry_files[@]}" -gt 0 ]; then
           jq -s 'reduce .[] as $item ({"auths": {}}; .auths += ($item.auths // {}))' \

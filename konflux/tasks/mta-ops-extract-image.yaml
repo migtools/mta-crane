@@ -67,12 +67,6 @@ spec:
             registry_files+=("${candidate}")
           fi
         done
-        component_pull_secret=/tekton/creds-secrets/components-namespace-pull/.dockerconfigjson
-        if [ -s "${component_pull_secret}" ]; then
-          # Give the component-scoped Quay credential precedence over generic pull secrets.
-          registry_files+=("${component_pull_secret}")
-        fi
-
         registry_config_arg=()
         if [ "${#registry_files[@]}" -gt 0 ]; then
           python3 "${registry_files[@]}" > /tmp/merged-registry-config.json <<'PY'
