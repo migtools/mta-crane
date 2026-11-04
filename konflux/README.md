@@ -52,9 +52,9 @@ Konflux `SNAPSHOT` parameter and locates:
 - A component whose name ends in `-mta-ops`.
 - A component whose name ends in `-mta-rsync-transfer`.
 
-The Quay digest references are converted to the corresponding Stage registry
-repositories while preserving the digest. The two images are verified before
-cluster resources are allocated.
+The original Quay digest references from the Snapshot are preserved. The
+`registry-pull-secrets` Secret is used to verify and extract those private
+images before cluster resources are allocated.
 
 ## IntegrationTestScenario
 
@@ -193,7 +193,7 @@ Check that the Snapshot contains both:
 *-mta-rsync-transfer
 ```
 
-The extraction Task requires Stage registry credentials through the configured
+The extraction Task requires Quay registry credentials through the configured
 `registry-pull-secrets` Secret.
 
 ### Lease fails before authentication
