@@ -43,6 +43,11 @@ spec:
             '.components[] | select(.name == $name) | .containerImage' | head -n 1
         }
 
+        to_shareable_pullspec() {
+          local image="$1"
+          printf '%s' "${image/\/art-images@/\/art-images-share@}"
+        }
+
         test -n "${SNAPSHOT_JSON}"
         mta_ops_component_name=$(printf '%s' "${SNAPSHOT_JSON}" | jq -r \
           '.components[].name | select(endswith("-mta-ops"))' | head -n 1)
@@ -60,8 +65,8 @@ spec:
           exit 1
         fi
 
-        mta_ops_image=$(extract_component_image "${mta_ops_component_name}")
-        rsync_image=$(extract_component_image "${rsync_component_name}")
+        mta_ops_image=$(to_shareable_pullspec "$(extract_component_image "${mta_ops_component_name}")")
+        rsync_image=$(to_shareable_pullspec "$(extract_component_image "${rsync_component_name}")")
 
         if [ -z "${mta_ops_image}" ] || [ "${mta_ops_image}" = "null" ]; then
           echo "ERROR: Snapshot component ${mta_ops_component_name} has no image"
