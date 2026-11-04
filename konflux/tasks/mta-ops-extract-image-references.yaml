@@ -75,9 +75,16 @@ spec:
         fi
 
         registry_config_arg=()
-        if [ -s /registry-pull-secret/.dockerconfigjson ]; then
-          registry_config_arg=(--registry-config=/registry-pull-secret/.dockerconfigjson)
-        fi
+        for candidate in \
+          /tekton/home/.docker/config.json \
+          /tekton/creds/.dockerconfigjson \
+          /registry-pull-secret/.dockerconfigjson; do
+          if [ -s "${candidate}" ]; then
+            registry_config_arg=(--registry-config="${candidate}")
+            echo "Using registry credentials from ${candidate}"
+            break
+          fi
+        done
 
         echo "Verifying MTA-Ops image: ${mta_ops_image}"
         oc image info "${mta_ops_image}" --filter-by-os linux/amd64 \

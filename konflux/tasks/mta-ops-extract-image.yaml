@@ -58,9 +58,16 @@ spec:
         chmod 0777 "${OUTPUT_DIR}"
 
         registry_config_arg=()
-        if [ -s /registry-pull-secret/.dockerconfigjson ]; then
-          registry_config_arg=(--registry-config=/registry-pull-secret/.dockerconfigjson)
-        fi
+        for candidate in \
+          /tekton/home/.docker/config.json \
+          /tekton/creds/.dockerconfigjson \
+          /registry-pull-secret/.dockerconfigjson; do
+          if [ -s "${candidate}" ]; then
+            registry_config_arg=(--registry-config="${candidate}")
+            echo "Using registry credentials from ${candidate}"
+            break
+          fi
+        done
         pull_secret_b64=$(oc --kubeconfig="${KUBECONFIG_PATH}" \
           --context="$(params.sourceContext)" \
           get secret/pull-secret -n openshift-config \
