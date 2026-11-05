@@ -59,9 +59,9 @@ repositories while preserving their digests:
 - `mta-rsync-transfer` -> `registry.stage.redhat.io/mta/mta-rsync-transfer-rhel9@sha256:<digest>`
 
 The stage images are verified before cluster resources are allocated. Verification
-retries for up to 30 minutes while the ART stage release becomes available. The
-test clusters already have access to the stage registry, so the pipeline does
-not modify their pull secrets.
+currently retries for up to one minute while debugging the ITS; the retry window
+is configurable through the Task parameters. The test clusters already have
+access to the stage registry, so the pipeline does not modify their pull secrets.
 
 ## IntegrationTestScenario
 

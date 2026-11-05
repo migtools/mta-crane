@@ -16,11 +16,11 @@ spec:
       default: registry-pull-secrets
     - name: stageImageRetrySeconds
       type: string
-      default: "1800"
+      default: "60"
       description: Maximum time to wait for stage images to become pullable.
     - name: stageImageRetryIntervalSeconds
       type: string
-      default: "60"
+      default: "10"
       description: Delay between stage image pullability checks.
   results:
     - name: mtaOpsImagePullspec
@@ -111,24 +111,15 @@ spec:
         echo "MTA-Ops stage image: ${mta_ops_image}"
         echo "Rsync stage image: ${rsync_image}"
 
-        registry_files=()
-        for candidate in \
-          /tekton/home/.docker/config.json \
-          /tekton/creds/.dockerconfigjson \
-          /tekton/creds-secrets/*/.dockerconfigjson \
-          /registry-pull-secret/.dockerconfigjson; do
-          if [ -s "${candidate}" ]; then
-            registry_files+=("${candidate}")
-          fi
-        done
         registry_config_arg=()
-        if [ "${#registry_files[@]}" -gt 0 ]; then
-          jq -s 'reduce .[] as $item ({"auths": {}}; .auths += ($item.auths // {}))' \
-            "${registry_files[@]}" > /tmp/merged-registry-config.json
-          registry_config_arg=(--registry-config=/tmp/merged-registry-config.json)
-          echo "Using ${#registry_files[@]} Konflux registry credential file(s)"
-          echo "Registry hosts in merged credentials:"
-          jq -r '.auths | keys[]' /tmp/merged-registry-config.json | sort -u
+        if [ -s /registry-pull-secret/.dockerconfigjson ]; then
+          registry_config_arg=(--registry-config=/registry-pull-secret/.dockerconfigjson)
+          echo "Using the explicit registry-pull-secrets credential file"
+          echo "Registry hosts in registry-pull-secrets:"
+          jq -r '.auths | keys[]' /registry-pull-secret/.dockerconfigjson | sort -u
+        else
+          echo "ERROR: registry-pull-secrets did not contain .dockerconfigjson"
+          exit 1
         fi
 
         retry_seconds="$(params.stageImageRetrySeconds)"
