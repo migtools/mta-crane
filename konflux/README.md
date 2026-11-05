@@ -52,10 +52,16 @@ Konflux `SNAPSHOT` parameter and locates:
 - A component whose name ends in `-mta-ops`.
 - A component whose name ends in `-mta-rsync-transfer`.
 
-The Snapshot image references are preserved unchanged, including their digest.
-Konflux-provided registry credentials are used to verify and extract the images
-before cluster resources are allocated. The same credentials are merged into
-the test-cluster pull secrets before workloads are started.
+The Snapshot image references are converted to the corresponding stage
+repositories while preserving their digests:
+
+- `mta-ops` -> `registry.stage.redhat.io/mta/mta-ops-rhel9@sha256:<digest>`
+- `mta-rsync-transfer` -> `registry.stage.redhat.io/mta/mta-rsync-transfer-rhel9@sha256:<digest>`
+
+The stage images are verified before cluster resources are allocated. Verification
+retries for up to 30 minutes while the ART stage release becomes available. The
+test clusters already have access to the stage registry, so the pipeline does
+not modify their pull secrets.
 
 ## IntegrationTestScenario
 
@@ -194,8 +200,8 @@ Check that the Snapshot contains both:
 *-mta-rsync-transfer
 ```
 
-The extraction Task requires Quay registry credentials through the configured
-`registry-pull-secrets` Secret.
+The extraction Task requires stage registry credentials through the configured
+`registry-pull-secrets` Secret and the Konflux service account credentials.
 
 ### Lease fails before authentication
 

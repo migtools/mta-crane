@@ -166,21 +166,6 @@ spec:
           workspace: shared-workspace
     - name: setup-nonadmin-contexts
       runAfter:
-        - configure-pull-secrets
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/migtools/mta-crane
-          - name: revision
-            value: konflux-its
-          - name: pathInRepo
-            value: konflux/tasks/mta-ops-setup-nonadmin-contexts.yaml
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
-    - name: configure-pull-secrets
-      runAfter:
         - merge-kubeconfigs
       taskRef:
         resolver: git
@@ -190,7 +175,7 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: konflux/tasks/mta-ops-configure-cluster-pull-secret.yaml
+            value: konflux/tasks/mta-ops-setup-nonadmin-contexts.yaml
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace

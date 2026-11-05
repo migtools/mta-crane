@@ -14,6 +14,14 @@ spec:
     - name: registryPullSecretName
       type: string
       default: registry-pull-secrets
+    - name: stageImageRetrySeconds
+      type: string
+      default: "1800"
+      description: Maximum time to wait for stage images to become pullable.
+    - name: stageImageRetryIntervalSeconds
+      type: string
+      default: "60"
+      description: Delay between stage image pullability checks.
   results:
     - name: mtaOpsImagePullspec
       description: MTA-Ops image pullspec from the Snapshot.
@@ -43,6 +51,30 @@ spec:
             '.components[] | select(.name == $name) | .containerImage' | head -n 1
         }
 
+        stage_image_pullspec() {
+          local component_name="$1"
+          local image="$2"
+          local digest="${image##*@}"
+
+          if [[ "${digest}" != sha256:* ]]; then
+            echo "ERROR: Snapshot image for ${component_name} is not digest-pinned: ${image}" >&2
+            return 1
+          fi
+
+          case "${component_name}" in
+            *-mta-ops)
+              printf 'registry.stage.redhat.io/mta/mta-ops-rhel9@%s' "${digest}"
+              ;;
+            *-mta-rsync-transfer)
+              printf 'registry.stage.redhat.io/mta/mta-rsync-transfer-rhel9@%s' "${digest}"
+              ;;
+            *)
+              echo "ERROR: No stage repository mapping for component ${component_name}" >&2
+              return 1
+              ;;
+          esac
+        }
+
         test -n "${SNAPSHOT_JSON}"
         mta_ops_component_name=$(printf '%s' "${SNAPSHOT_JSON}" | jq -r \
           '.components[].name | select(endswith("-mta-ops"))' | head -n 1)
@@ -60,19 +92,24 @@ spec:
           exit 1
         fi
 
-        mta_ops_image=$(extract_component_image "${mta_ops_component_name}")
-        rsync_image=$(extract_component_image "${rsync_component_name}")
+        mta_ops_snapshot_image=$(extract_component_image "${mta_ops_component_name}")
+        rsync_snapshot_image=$(extract_component_image "${rsync_component_name}")
 
-        if [ -z "${mta_ops_image}" ] || [ "${mta_ops_image}" = "null" ]; then
+        if [ -z "${mta_ops_snapshot_image}" ] || [ "${mta_ops_snapshot_image}" = "null" ]; then
           echo "ERROR: Snapshot component ${mta_ops_component_name} has no image"
           printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
           exit 1
         fi
-        if [ -z "${rsync_image}" ] || [ "${rsync_image}" = "null" ]; then
+        if [ -z "${rsync_snapshot_image}" ] || [ "${rsync_snapshot_image}" = "null" ]; then
           echo "ERROR: Snapshot component ${rsync_component_name} has no image"
           printf '%s\n' "${SNAPSHOT_JSON}" | jq -r '.components[]?.name'
           exit 1
         fi
+
+        mta_ops_image=$(stage_image_pullspec "${mta_ops_component_name}" "${mta_ops_snapshot_image}")
+        rsync_image=$(stage_image_pullspec "${rsync_component_name}" "${rsync_snapshot_image}")
+        echo "MTA-Ops stage image: ${mta_ops_image}"
+        echo "Rsync stage image: ${rsync_image}"
 
         registry_files=()
         for candidate in \
@@ -94,12 +131,59 @@ spec:
           jq -r '.auths | keys[]' /tmp/merged-registry-config.json | sort -u
         fi
 
-        echo "Verifying MTA-Ops image: ${mta_ops_image}"
-        oc image info "${mta_ops_image}" --filter-by-os linux/amd64 \
-          "${registry_config_arg[@]}" >/dev/null
-        echo "Verifying rsync image: ${rsync_image}"
-        oc image info "${rsync_image}" --filter-by-os linux/amd64 \
-          "${registry_config_arg[@]}" >/dev/null
+        retry_seconds="$(params.stageImageRetrySeconds)"
+        retry_interval_seconds="$(params.stageImageRetryIntervalSeconds)"
+        deadline=$((SECONDS + retry_seconds))
+        last_mta_error=/tmp/mta-ops-image-error.log
+        last_rsync_error=/tmp/rsync-image-error.log
+
+        while true; do
+          mta_ops_pullable=false
+          rsync_pullable=false
+
+          echo "Verifying MTA-Ops stage image: ${mta_ops_image}"
+          if oc image info "${mta_ops_image}" --filter-by-os linux/amd64 \
+            "${registry_config_arg[@]}" >"${last_mta_error}" 2>&1; then
+            mta_ops_pullable=true
+            echo "MTA-Ops stage image is pullable"
+          else
+            echo "MTA-Ops stage image is not pullable yet"
+          fi
+
+          echo "Verifying rsync stage image: ${rsync_image}"
+          if oc image info "${rsync_image}" --filter-by-os linux/amd64 \
+            "${registry_config_arg[@]}" >"${last_rsync_error}" 2>&1; then
+            rsync_pullable=true
+            echo "Rsync stage image is pullable"
+          else
+            echo "Rsync stage image is not pullable yet"
+          fi
+
+          if [ "${mta_ops_pullable}" = true ] && [ "${rsync_pullable}" = true ]; then
+            break
+          fi
+
+          if [ "${SECONDS}" -ge "${deadline}" ]; then
+            echo "ERROR: stage images were not pullable within ${retry_seconds} seconds"
+            if [ "${mta_ops_pullable}" != true ]; then
+              echo "Last MTA-Ops verification error:"
+              cat "${last_mta_error}"
+            fi
+            if [ "${rsync_pullable}" != true ]; then
+              echo "Last rsync verification error:"
+              cat "${last_rsync_error}"
+            fi
+            exit 1
+          fi
+
+          remaining_seconds=$((deadline - SECONDS))
+          sleep_seconds="${retry_interval_seconds}"
+          if [ "${sleep_seconds}" -gt "${remaining_seconds}" ]; then
+            sleep_seconds="${remaining_seconds}"
+          fi
+          echo "Retrying stage image verification in ${sleep_seconds}s (${remaining_seconds}s remaining)"
+          sleep "${sleep_seconds}"
+        done
 
         echo "MTA-Ops image: ${mta_ops_image}"
         echo "Rsync image: ${rsync_image}"
