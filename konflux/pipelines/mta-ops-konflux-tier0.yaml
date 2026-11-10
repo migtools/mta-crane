@@ -39,7 +39,7 @@ spec:
       default: ""
     - name: deleteDelaySeconds
       type: string
-      default: "3600"
+      default: "60"
     - name: ocpctlUrl
       type: string
       default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1

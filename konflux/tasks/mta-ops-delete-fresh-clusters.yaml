@@ -46,6 +46,14 @@ spec:
         [ -n "${source_id}" ] || source_id=$(cat "${id_dir}/source.cluster-id" 2>/dev/null || true)
         [ -n "${target_id}" ] || target_id=$(cat "${id_dir}/target.cluster-id" 2>/dev/null || true)
 
+        if [ -z "${source_id}" ] && [ -z "${target_id}" ]; then
+          echo "ERROR: no source or target cluster IDs were available for cleanup"
+          exit 1
+        fi
+
+        echo "Cleanup scheduled in $(params.delaySeconds)s"
+        [ -n "${source_id}" ] && echo "Source cluster cleanup is scheduled"
+        [ -n "${target_id}" ] && echo "Target cluster cleanup is scheduled"
         sleep "$(params.delaySeconds)"
 
         delete_cluster() {

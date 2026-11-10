@@ -141,8 +141,8 @@ cost center: 773
 region: us-east-1
 ```
 
-The owner is resolved from the authenticated OCPCTL user. Clusters are
-deleted in `finally` after the configured debug delay, which is one hour by
+ The owner is resolved from the authenticated OCPCTL user. Clusters are
+deleted in `finally` after the configured debug delay, which is 60 seconds by
 default.
 
 The Task pods must be able to resolve and reach the OCPCTL endpoint. If the
