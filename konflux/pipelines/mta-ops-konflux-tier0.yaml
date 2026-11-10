@@ -61,9 +61,9 @@ spec:
     - name: shared-workspace
   results:
     - name: sourceClusterId
-      value: $(tasks.provision-fresh-clusters.results.sourceClusterId)
+      value: $(tasks.provision-source.results.clusterId)
     - name: targetClusterId
-      value: $(tasks.provision-fresh-clusters.results.targetClusterId)
+      value: $(tasks.provision-target.results.clusterId)
     - name: sourceVersion
       value: $(tasks.verify-clusters.results.sourceVersion)
     - name: targetVersion
@@ -109,7 +109,7 @@ spec:
           value: $(params.artBuildHistoryUrl)
         - name: artGroup
           value: $(params.artGroup)
-    - name: provision-fresh-clusters
+    - name: provision-source
       runAfter:
         - resolve-art-nvr
       taskRef:
@@ -120,14 +120,14 @@ spec:
           - name: revision
             value: konflux-its
           - name: pathInRepo
-            value: konflux/tasks/mta-ops-provision-fresh-clusters.yaml
+            value: konflux/tasks/mta-ops-provision-one-fresh-cluster.yaml
       params:
+        - name: clusterRole
+          value: src
         - name: runId
           value: $(context.pipelineRun.name)
-        - name: sourceVersion
+        - name: version
           value: $(params.sourceVersion)
-        - name: targetVersion
-          value: $(params.targetVersion)
         - name: profile
           value: $(params.profile)
         - name: region
@@ -146,12 +146,48 @@ spec:
           value: $(params.ocpctlSecretName)
         - name: ocpctlSecretKey
           value: $(params.ocpctlSecretKey)
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
+    - name: provision-target
+      runAfter:
+        - resolve-art-nvr
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: konflux/tasks/mta-ops-provision-one-fresh-cluster.yaml
+      params:
+        - name: clusterRole
+          value: tgt
+        - name: runId
+          value: $(context.pipelineRun.name)
+        - name: version
+          value: $(params.targetVersion)
+        - name: initialDelaySeconds
+          value: "30"
+        - name: profile
+          value: $(params.profile)
+        - name: region
+          value: $(params.region)
+        - name: baseDomain
+          value: $(params.baseDomain)
+        - name: team
+          value: $(params.team)
+        - name: costCenter
+          value: $(params.costCenter)
+        - name: ownerEmail
+          value: $(params.ownerEmail)
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
     - name: download-source-kubeconfig
       runAfter:
-        - provision-fresh-clusters
+        - provision-source
       taskRef:
         resolver: git
         params:
@@ -163,7 +199,7 @@ spec:
             value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
       params:
         - name: clusterId
-          value: $(tasks.provision-fresh-clusters.results.sourceClusterId)
+          value: $(tasks.provision-source.results.clusterId)
         - name: outputFileName
           value: source.kubeconfig
         - name: ocpctlUrl
@@ -177,7 +213,7 @@ spec:
           workspace: shared-workspace
     - name: download-target-kubeconfig
       runAfter:
-        - provision-fresh-clusters
+        - provision-target
       taskRef:
         resolver: git
         params:
@@ -189,7 +225,7 @@ spec:
             value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
       params:
         - name: clusterId
-          value: $(tasks.provision-fresh-clusters.results.targetClusterId)
+          value: $(tasks.provision-target.results.clusterId)
         - name: outputFileName
           value: target.kubeconfig
         - name: ocpctlUrl
@@ -314,7 +350,10 @@ spec:
   finally:
     - name: delete-fresh-clusters
       when:
-        - input: $(tasks.provision-fresh-clusters.status)
+        - input: $(tasks.provision-source.status)
+          operator: in
+          values: [Succeeded, Failed, Cancelled]
+        - input: $(tasks.provision-target.status)
           operator: in
           values: [Succeeded, Failed, Cancelled]
       taskRef:
@@ -328,9 +367,9 @@ spec:
             value: konflux/tasks/mta-ops-delete-fresh-clusters.yaml
       params:
         - name: sourceClusterId
-          value: $(tasks.provision-fresh-clusters.results.sourceClusterId)
+          value: $(tasks.provision-source.results.clusterId)
         - name: targetClusterId
-          value: $(tasks.provision-fresh-clusters.results.targetClusterId)
+          value: $(tasks.provision-target.results.clusterId)
         - name: delaySeconds
           value: $(params.deleteDelaySeconds)
         - name: ocpctlUrl

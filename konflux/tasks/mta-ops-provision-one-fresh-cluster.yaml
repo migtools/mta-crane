@@ -1,0 +1,133 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mta-ops-provision-one-fresh-cluster
+  labels:
+    app.kubernetes.io/name: mta-ops
+    app.kubernetes.io/component: cluster-lifecycle
+spec:
+  description: Provision one fresh OpenShift cluster through OCPCTL.
+  params:
+    - name: clusterRole
+      type: string
+      description: Cluster suffix, either src or tgt.
+    - name: runId
+      type: string
+    - name: version
+      type: string
+    - name: initialDelaySeconds
+      type: string
+      default: "0"
+    - name: profile
+      type: string
+      default: aws-sno-ga
+    - name: region
+      type: string
+      default: us-east-1
+    - name: baseDomain
+      type: string
+      default: mg.dog8code.com
+    - name: team
+      type: string
+      default: CI-Automation
+    - name: costCenter
+      type: string
+      default: "773"
+    - name: ownerEmail
+      type: string
+      default: ""
+    - name: ocpctlUrl
+      type: string
+      default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
+    - name: ocpctlSecretName
+      type: string
+      default: ocpctl-ci-key
+    - name: ocpctlSecretKey
+      type: string
+      default: api-key
+  results:
+    - name: clusterId
+    - name: clusterName
+  steps:
+    - name: provision
+      image: quay.io/migqe/migqe-base:latest
+      env:
+        - name: OCPCTL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.ocpctlSecretName)
+              key: $(params.ocpctlSecretKey)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        role="$(params.clusterRole)"
+        case "${role}" in
+          src|tgt) ;;
+          *) echo "ERROR: clusterRole must be src or tgt"; exit 1 ;;
+        esac
+
+        delay="$(params.initialDelaySeconds)"
+        [ "${delay}" = "0" ] || sleep "${delay}"
+
+        owner="$(params.ownerEmail)"
+        if [ -z "${owner}" ]; then
+          owner=$(curl -fsS --insecure \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+            "$(params.ocpctlUrl)/auth/me" | \
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("user") or {}).get("email") or d.get("email") or "")')
+        fi
+        test -n "${owner}"
+
+        short_id=$(printf '%s' "$(params.runId)" | sha256sum | cut -c1-5)
+        cluster_name="mtaops-kflx-${short_id}-${role}"
+        create_attempt=1
+
+        while true; do
+          response=$(curl -sS -w '\n%{http_code}' --insecure \
+            -X POST "$(params.ocpctlUrl)/clusters" \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"${cluster_name}\",\"platform\":\"aws\",\"cluster_type\":\"openshift\",\"version\":\"$(params.version)\",\"profile\":\"$(params.profile)\",\"region\":\"$(params.region)\",\"base_domain\":\"$(params.baseDomain)\",\"owner\":\"${owner}\",\"team\":\"$(params.team)\",\"cost_center\":\"$(params.costCenter)\",\"ttl_hours\":4}" || true)
+          http_code=$(printf '%s\n' "${response}" | tail -n 1)
+          body=$(printf '%s\n' "${response}" | sed '$d')
+          if [ "${http_code}" = "201" ]; then
+            break
+          fi
+          if [ "${http_code}" = "429" ] && [ "${create_attempt}" -lt 6 ]; then
+            retry_delay=$((create_attempt * 15))
+            echo "OCPCTL rate limited ${role} creation; retrying in ${retry_delay}s"
+            sleep "${retry_delay}"
+            create_attempt=$((create_attempt + 1))
+            continue
+          fi
+          echo "OCPCTL create failed for ${role} with HTTP ${http_code}"
+          printf '%s\n' "${body}"
+          exit 1
+        done
+
+        cluster_id=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))')
+        test -n "${cluster_id}"
+        printf '%s' "${cluster_id}" > "$(results.clusterId.path)"
+        printf '%s' "${cluster_name}" > "$(results.clusterName.path)"
+        echo "Created ${role} cluster ${cluster_name} (${cluster_id})"
+
+        elapsed=0
+        status=""
+        while [ "${elapsed}" -lt 5400 ]; do
+          status=$(curl -fsS --insecure \
+            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+            "$(params.ocpctlUrl)/clusters/${cluster_id}" | \
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print(str((d.get("cluster") or d).get("status", "")).upper())')
+          echo "${role} cluster status=${status} elapsed=${elapsed}s"
+          [ "${status}" = "READY" ] && exit 0
+          if [[ "${status}" == "FAILED" || "${status}" == "DESTROY_FAILED" || "${status}" == "DESTROYED" || "${status}" == "DELETING" ]]; then
+            echo "ERROR: ${role} cluster reached terminal status ${status}"
+            exit 1
+          fi
+          sleep 30
+          elapsed=$((elapsed + 30))
+        done
+
+        echo "ERROR: ${role} cluster did not become READY within 5400 seconds"
+        exit 1
