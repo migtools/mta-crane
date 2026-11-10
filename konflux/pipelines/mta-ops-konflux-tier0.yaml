@@ -149,9 +149,62 @@ spec:
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: merge-kubeconfigs
+    - name: download-source-kubeconfig
       runAfter:
         - provision-fresh-clusters
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
+      params:
+        - name: clusterId
+          value: $(tasks.provision-fresh-clusters.results.sourceClusterId)
+        - name: outputFileName
+          value: source.kubeconfig
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: download-target-kubeconfig
+      runAfter:
+        - provision-fresh-clusters
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/migtools/mta-crane
+          - name: revision
+            value: konflux-its
+          - name: pathInRepo
+            value: konflux/tasks/mta-ops-ocpctl-download-kubeconfig.yaml
+      params:
+        - name: clusterId
+          value: $(tasks.provision-fresh-clusters.results.targetClusterId)
+        - name: outputFileName
+          value: target.kubeconfig
+        - name: ocpctlUrl
+          value: $(params.ocpctlUrl)
+        - name: ocpctlSecretName
+          value: $(params.ocpctlSecretName)
+        - name: ocpctlSecretKey
+          value: $(params.ocpctlSecretKey)
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: merge-kubeconfigs
+      runAfter:
+        - download-source-kubeconfig
+        - download-target-kubeconfig
       taskRef:
         resolver: git
         params:

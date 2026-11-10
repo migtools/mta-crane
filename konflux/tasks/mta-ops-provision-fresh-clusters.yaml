@@ -68,9 +68,8 @@ spec:
         set -euo pipefail
 
         WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
-        KUBECONFIG_DIR="${WORKSPACE_PATH}/.kube"
         ID_DIR="${WORKSPACE_PATH}/.ocpctl"
-        mkdir -p "${KUBECONFIG_DIR}" "${ID_DIR}"
+        mkdir -p "${ID_DIR}"
         : > "${ID_DIR}/source.cluster-id"
         : > "${ID_DIR}/target.cluster-id"
 
@@ -90,8 +89,6 @@ spec:
           local version="$2"
           local cluster_name="mtaops-kflx-${short_id}-${role}"
           local id_file="${ID_DIR}/${role}.cluster-id"
-          local kubeconfig_path="${KUBECONFIG_DIR}/${role}.kubeconfig"
-
           response=$(curl -sS -w '\n%{http_code}' --insecure \
             -X POST "$(params.ocpctlUrl)/clusters" \
             -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
@@ -126,21 +123,6 @@ spec:
           done
           [ "${status}" = READY ]
 
-          response=$(curl -fsS --insecure \
-            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
-            "$(params.ocpctlUrl)/clusters/${cluster_id}/kubeconfig/download-url")
-          download_url=$(printf '%s' "${response}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("download_url", ""))')
-          test -n "${download_url}"
-          if [[ "${download_url}" == /api/* ]]; then
-            base_url="$(params.ocpctlUrl)"
-            base_url="${base_url%%/api/*}"
-            curl -fsS --insecure -o "${kubeconfig_path}" \
-              -H "Authorization: Bearer ${OCPCTL_API_KEY}" "${base_url}${download_url}"
-          else
-            curl -fsS --insecure -o "${kubeconfig_path}" "${download_url}"
-          fi
-          chmod 600 "${kubeconfig_path}"
-          KUBECONFIG="${kubeconfig_path}" oc whoami >/dev/null
         }
 
         provision_one src "$(params.sourceVersion)" &
@@ -181,5 +163,10 @@ spec:
         [ "${source_status}" -eq 0 ] || exit "${source_status}"
         [ "${target_status}" -eq 0 ] || exit "${target_status}"
 
-        printf '%s' "$(cat "${ID_DIR}/source.cluster-id")" > "$(results.sourceClusterId.path)"
-        printf '%s' "$(cat "${ID_DIR}/target.cluster-id")" > "$(results.targetClusterId.path)"
+        source_cluster_id="$(cat "${ID_DIR}/source.cluster-id")"
+        target_cluster_id="$(cat "${ID_DIR}/target.cluster-id")"
+        test -n "${source_cluster_id}"
+        test -n "${target_cluster_id}"
+        printf '%s' "${source_cluster_id}" > "$(results.sourceClusterId.path)"
+        printf '%s' "${target_cluster_id}" > "$(results.targetClusterId.path)"
+        echo "Published source and target cluster IDs for kubeconfig download"
