@@ -19,6 +19,10 @@ spec:
       value: 2eab53dd-21cd-41f0-aa8b-f17d4fc2e231
     - name: targetClusterId
       value: 1e0aab1d-0465-448e-8fcb-5a2da87e7a4b
+    - name: artBuildHistoryUrl
+      value: ""
+    - name: artGroup
+      value: ""
   workspaces:
     - name: shared-workspace
       volumeClaimTemplate:

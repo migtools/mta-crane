@@ -16,6 +16,12 @@ spec:
       type: string
     - name: targetClusterId
       type: string
+    - name: artBuildHistoryUrl
+      type: string
+      default: ""
+    - name: artGroup
+      type: string
+      default: ""
     - name: ocpctlUrl
       type: string
       default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
