@@ -1,7 +1,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: mta-ops-konflux-tier0-
+  generateName: mta-ops-existing-clusters-debug-
 spec:
   pipelineRef:
     resolver: git
@@ -11,7 +11,18 @@ spec:
       - name: revision
         value: konflux-its
       - name: pathInRepo
-        value: konflux/pipelines/mta-ops-konflux-tier0.yaml
+        value: konflux/pipelines/mta-ops-existing-clusters-debug.yaml
+  params:
+    - name: SNAPSHOT
+      value: '{"components":[{"name":"mta-8-3-mta-ops","containerImage":"quay.io/redhat-user-workloads/ocp-art-tenant/art-images@sha256:462144b07e626ef7d467d902dbad10ae9c8dc3f579c0186c219a27c69f83b4cd"},{"name":"mta-8-3-mta-rsync-transfer","containerImage":"quay.io/redhat-user-workloads/ocp-art-tenant/art-images@sha256:9969b887bf804f863d29806801d2d98ba46c39f99c56e1da3e28f507b55dc077"}]}'
+    - name: sourceClusterId
+      value: 2eab53dd-21cd-41f0-aa8b-f17d4fc2e231
+    - name: targetClusterId
+      value: 1e0aab1d-0465-448e-8fcb-5a2da87e7a4b
+    - name: artBuildHistoryUrl
+      value: ""
+    - name: artGroup
+      value: ""
   workspaces:
     - name: shared-workspace
       volumeClaimTemplate:
