@@ -20,6 +20,10 @@ spec:
     - name: kubeconfigPath
       type: string
       default: /workspace/shared-workspace/.kube/merged-kubeconfig
+    - name: testFilter
+      type: string
+      default: ""
+      description: Optional Ginkgo focus regular expression.
   workspaces:
     - name: shared-workspace
       description: Workspace containing tools, kubeconfig, reports, and logs.
@@ -56,11 +60,15 @@ spec:
         mkdir -p "${TEST_REPO_PATH}/reports"
 
         cd "${TEST_REPO_PATH}"
-        ginkgo run -v -r --procs=4 \
+        ginkgo_args=(run -v -r --procs=4 \
           --timeout=4h \
           --junit-report="${TEST_REPO_PATH}/reports/junitreport.xml" \
-          --keep-going \
-          e2e-tests/tests/tier0 -- \
+          --keep-going)
+        if [ -n "$(params.testFilter)" ]; then
+          ginkgo_args+=(--focus "$(params.testFilter)")
+        fi
+
+        ginkgo "${ginkgo_args[@]}" e2e-tests/tests/tier0 -- \
           --k8sdeploy-bin="${K8SDEPLOY_BIN}" \
           --crane-bin="${MTA_OPS_BIN}" \
           --source-context=src \
