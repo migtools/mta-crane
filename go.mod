@@ -13,7 +13,7 @@ require (
 	github.com/konveyor/crane-lib v0.1.6-0.20261001154521-926a5ffd044f
 	github.com/migtools/crane-plugin-buildconfig-to-builds v0.11.0
 	github.com/migtools/crane-plugin-openshift v0.11.0
-	github.com/migtools/pvc-transfer v0.0.0-20260820041907-3bfa753b411a
+	github.com/migtools/pvc-transfer v0.0.0-20261106101704-bc88d2ccd671
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
