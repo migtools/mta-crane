@@ -177,9 +177,16 @@ spec:
         login_nonadmin "${TARGET_ADMIN_KUBECONFIG}" \
           "${TARGET_DEV_KUBECONFIG}" "$(params.targetNonAdminContext)"
 
-        KUBECONFIG="${SOURCE_ADMIN_KUBECONFIG}:${TARGET_ADMIN_KUBECONFIG}:${SOURCE_DEV_KUBECONFIG}:${TARGET_DEV_KUBECONFIG}" \
-          oc config view --flatten --raw > "${MERGED_KUBECONFIG}"
+        test -s "${MERGED_KUBECONFIG}"
+        MERGED_WITH_DEV_KUBECONFIG="${MERGED_KUBECONFIG}.tmp"
+        KUBECONFIG="${MERGED_KUBECONFIG}:${SOURCE_DEV_KUBECONFIG}:${TARGET_DEV_KUBECONFIG}" \
+          oc config view --flatten --raw > "${MERGED_WITH_DEV_KUBECONFIG}"
+        mv "${MERGED_WITH_DEV_KUBECONFIG}" "${MERGED_KUBECONFIG}"
         chmod 600 "${MERGED_KUBECONFIG}"
 
         echo "Prepared contexts:"
         oc --kubeconfig="${MERGED_KUBECONFIG}" config get-contexts
+        echo "Validating preserved admin contexts:"
+        oc --kubeconfig="${MERGED_KUBECONFIG}" --context=src get --raw=/version >/dev/null
+        oc --kubeconfig="${MERGED_KUBECONFIG}" --context=tgt get --raw=/version >/dev/null
+        echo "Admin contexts remain authenticated after adding non-admin contexts"
