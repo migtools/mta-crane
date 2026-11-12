@@ -112,13 +112,43 @@ spec:
         printf '%s' "${cluster_name}" > "$(results.clusterName.path)"
         echo "Created ${role} cluster ${cluster_name} (${cluster_id})"
 
+        fetch_cluster_status() {
+          local status_response
+          local status
+          local attempt
+
+          for attempt in 1 2 3 4 5; do
+            if status_response=$(curl -fsS --insecure \
+              --connect-timeout 10 --max-time 30 \
+              --retry 2 --retry-delay 3 --retry-all-errors \
+              -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
+              "$(params.ocpctlUrl)/clusters/${cluster_id}" 2>/tmp/ocpctl-status-error); then
+              status=$(printf '%s' "${status_response}" | \
+                python3 -c 'import json,sys; d=json.load(sys.stdin); print(str((d.get("cluster") or d).get("status", "")).upper())' \
+                2>/dev/null || true)
+              if [ -n "${status}" ]; then
+                printf '%s' "${status}"
+                return 0
+              fi
+            fi
+
+            echo "${role} status query attempt ${attempt}/5 failed; retrying in 10s"
+            if [ -s /tmp/ocpctl-status-error ]; then
+              echo "$(tr '\n' ' ' < /tmp/ocpctl-status-error)"
+            fi
+            sleep 10
+          done
+
+          return 1
+        }
+
         elapsed=0
         status=""
         while [ "${elapsed}" -lt 5400 ]; do
-          status=$(curl -fsS --insecure \
-            -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
-            "$(params.ocpctlUrl)/clusters/${cluster_id}" | \
-            python3 -c 'import json,sys; d=json.load(sys.stdin); print(str((d.get("cluster") or d).get("status", "")).upper())')
+          if ! status=$(fetch_cluster_status); then
+            echo "${role} status endpoint unavailable; continuing to wait"
+            status="UNKNOWN"
+          fi
           echo "${role} cluster status=${status} elapsed=${elapsed}s"
           [ "${status}" = "READY" ] && exit 0
           if [[ "${status}" == "FAILED" || "${status}" == "DESTROY_FAILED" || "${status}" == "DESTROYED" || "${status}" == "DELETING" ]]; then
