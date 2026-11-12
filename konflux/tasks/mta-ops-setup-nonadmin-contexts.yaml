@@ -57,7 +57,8 @@ spec:
 
         username = os.environ["USERNAME"]
         password = os.environ["PASSWORD"].encode()
-        hashed = bcrypt.hashpw(password, bcrypt.gensalt()).decode().replace("$2b$", "$2y$")
+        # OpenShift OAuth expects the bcrypt $2b$ prefix.
+        hashed = bcrypt.hashpw(password, bcrypt.gensalt()).decode()
         line = f"{username}:{hashed}\n"
         output = Path("$(workspaces.shared-workspace.path)/.htpasswd")
         (output / "source").write_text(line)
