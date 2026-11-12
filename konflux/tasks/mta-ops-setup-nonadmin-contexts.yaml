@@ -57,8 +57,8 @@ spec:
 
         username = os.environ["USERNAME"]
         password = os.environ["PASSWORD"].encode()
-        # OpenShift OAuth expects the bcrypt $2b$ prefix.
-        hashed = bcrypt.hashpw(password, bcrypt.gensalt()).decode()
+        # Match the working MTA-QE Tekton/Jenkins implementation.
+        hashed = bcrypt.hashpw(password, bcrypt.gensalt()).decode().replace("$2b$", "$2y$")
         line = f"{username}:{hashed}\n"
         output = Path("$(workspaces.shared-workspace.path)/.htpasswd")
         (output / "source").write_text(line)
@@ -112,15 +112,15 @@ spec:
 
           configured_idps=$(KUBECONFIG="${kubeconfig}" oc get oauth cluster \
             -o jsonpath='{range .spec.identityProviders[*]}{.name}{"\n"}{end}')
-          if printf '%s\n' "${configured_idps}" | grep -qx "${idp_name}"; then
-            echo "Identity provider ${idp_name} already exists; skipping patch"
-          else
-            KUBECONFIG="${kubeconfig}" oc create secret generic "${idp_name}" \
-              --from-file=htpasswd="${htpasswd_file}" \
-              -n openshift-config \
-              --dry-run=client -o yaml | \
-              KUBECONFIG="${kubeconfig}" oc apply -f -
+          KUBECONFIG="${kubeconfig}" oc create secret generic "${idp_name}" \
+            --from-file=htpasswd="${htpasswd_file}" \
+            -n openshift-config \
+            --dry-run=client -o yaml | \
+            KUBECONFIG="${kubeconfig}" oc apply -f -
 
+          if printf '%s\n' "${configured_idps}" | grep -qx "${idp_name}"; then
+            echo "Identity provider ${idp_name} already exists; secret refreshed"
+          else
             if [ -n "${configured_idps}" ]; then
               KUBECONFIG="${kubeconfig}" oc patch oauth cluster --type=json \
                 -p "[{\"op\":\"add\",\"path\":\"/spec/identityProviders/-\",\"value\":{\"name\":\"${idp_name}\",\"type\":\"HTPasswd\",\"htpasswd\":{\"fileData\":{\"name\":\"${idp_name}\"}}}}]"
@@ -149,24 +149,44 @@ spec:
           local output_kubeconfig="$2"
           local context_name="$3"
           local api_server
+          local login_log="${output_kubeconfig}.login.log"
+          local login_succeeded=false
 
           api_server=$(KUBECONFIG="${admin_kubeconfig}" oc whoami --show-server)
+          echo "Non-admin login endpoint for ${context_name}: ${api_server}"
           for attempt in 1 2 3 4 5 6; do
-            if oc login "${api_server}" \
-                -u "${TEST_USERNAME}" \
-                -p "${TEST_PASSWORD}" \
-                --insecure-skip-tls-verify=true \
-                --kubeconfig="${output_kubeconfig}" >/dev/null; then
+            rm -f "${output_kubeconfig}" "${login_log}"
+            set +e
+            oc login "${api_server}" \
+              -u "${TEST_USERNAME}" \
+              -p "${TEST_PASSWORD}" \
+              --insecure-skip-tls-verify=true \
+              --kubeconfig="${output_kubeconfig}" \
+              >"${login_log}" 2>&1
+            login_status=$?
+            set -e
+            if [ "${login_status}" -eq 0 ] && \
+               KUBECONFIG="${output_kubeconfig}" oc config current-context >/dev/null 2>&1; then
+              login_succeeded=true
+              echo "Non-admin login succeeded for ${context_name} on attempt ${attempt}"
               break
             fi
-            echo "Non-admin login attempt ${attempt} failed; retrying in 30s"
+            echo "Non-admin login attempt ${attempt} failed for ${context_name} (exit=${login_status})"
+            echo "oc login output:"
+            cat "${login_log}" || true
             sleep 30
           done
 
-          KUBECONFIG="${output_kubeconfig}" oc whoami >/dev/null || {
-            echo "Non-admin login failed for ${context_name}"
+          if [ "${login_succeeded}" != true ]; then
+            echo "ERROR: non-admin login failed for ${context_name}"
+            echo "OAuth identity providers:"
+            KUBECONFIG="${admin_kubeconfig}" oc get oauth cluster \
+              -o jsonpath='{range .spec.identityProviders[*]}{.name}{" type="}{.type}{"\n"}{end}' || true
+            echo "OAuth pods:"
+            KUBECONFIG="${admin_kubeconfig}" oc get pods \
+              -n openshift-authentication -l app=oauth-openshift -o wide || true
             exit 1
-          }
+          fi
 
           current_context=$(KUBECONFIG="${output_kubeconfig}" oc config current-context)
           oc config rename-context "${current_context}" "${context_name}" \
