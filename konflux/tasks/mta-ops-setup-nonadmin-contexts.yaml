@@ -110,10 +110,97 @@ spec:
           return 1
         }
 
+        wait_for_oauth_rollout() {
+          local kubeconfig="$1"
+          local cluster_name="$2"
+          local initial_generation="$3"
+          local deployment_state authentication_state endpoint_ips
+          local generation observed_generation desired_replicas updated_replicas ready_replicas available_replicas
+          local authentication_available authentication_progressing authentication_degraded
+          local condition condition_status attempt
+
+          echo "Waiting for the ${cluster_name} OAuth configuration to be applied"
+          for attempt in {1..40}; do
+            generation=0
+            observed_generation=0
+            desired_replicas=0
+            updated_replicas=0
+            ready_replicas=0
+            available_replicas=0
+            deployment_state=$(KUBECONFIG="${kubeconfig}" oc get deployment/oauth-openshift \
+              -n openshift-authentication \
+              -o jsonpath='{.metadata.generation}{" "}{.status.observedGeneration}{" "}{.spec.replicas}{" "}{.status.updatedReplicas}{" "}{.status.readyReplicas}{" "}{.status.availableReplicas}' \
+              2>/dev/null || true)
+            if [ -n "${deployment_state}" ]; then
+              read -r generation observed_generation desired_replicas updated_replicas \
+                ready_replicas available_replicas <<< "${deployment_state}" || true
+            fi
+
+            authentication_available=False
+            authentication_progressing=True
+            authentication_degraded=True
+            authentication_state=$(KUBECONFIG="${kubeconfig}" oc get co authentication \
+              -o jsonpath='{range .status.conditions[*]}{.type}{"="}{.status}{"\n"}{end}' \
+              2>/dev/null || true)
+            while IFS='=' read -r condition condition_status; do
+              case "${condition}" in
+                Available) authentication_available="${condition_status}" ;;
+                Progressing) authentication_progressing="${condition_status}" ;;
+                Degraded) authentication_degraded="${condition_status}" ;;
+              esac
+            done <<< "${authentication_state}"
+            endpoint_ips=$(KUBECONFIG="${kubeconfig}" oc get endpoints oauth-openshift \
+              -n openshift-authentication \
+              -o jsonpath='{range .subsets[*].addresses[*]}{.ip}{"\n"}{end}' \
+              2>/dev/null || true)
+
+            if [[ "${generation}" =~ ^[0-9]+$ ]] && \
+               [ "${generation}" -gt "${initial_generation}" ] && \
+               [ "${observed_generation}" = "${generation}" ] && \
+               [ "${updated_replicas}" = "${desired_replicas}" ] && \
+               [ "${ready_replicas}" = "${desired_replicas}" ] && \
+               [ "${available_replicas}" = "${desired_replicas}" ] && \
+               [ "${authentication_available}" = True ] && \
+               [ "${authentication_progressing}" = False ] && \
+               [ "${authentication_degraded}" = False ] && \
+               [ -n "${endpoint_ips}" ]; then
+              echo "OAuth is ready for ${cluster_name}: deployment generation ${generation}, endpoints available"
+              return 0
+            fi
+
+            if [ "$((attempt % 4))" -eq 0 ]; then
+              echo "Still waiting for ${cluster_name} OAuth readiness (${attempt}/40): deployment generation=${generation} observed=${observed_generation} ready=${ready_replicas}/${desired_replicas}; authentication Available=${authentication_available} Progressing=${authentication_progressing} Degraded=${authentication_degraded}"
+            fi
+            sleep 15
+          done
+
+          echo "ERROR: ${cluster_name} OAuth did not finish applying the HTPasswd configuration within 600 seconds"
+          echo "Final OAuth deployment state: ${deployment_state:-unavailable}"
+          echo "Authentication operator conditions:"
+          KUBECONFIG="${kubeconfig}" oc get co authentication \
+            -o jsonpath='{range .status.conditions[*]}{.type}{"="}{.status}{" reason="}{.reason}{" message="}{.message}{"\n"}{end}' || true
+          echo "OAuth service endpoints: ${endpoint_ips:-none}"
+          KUBECONFIG="${kubeconfig}" oc get pods -n openshift-authentication \
+            -l app=oauth-openshift -o wide || true
+          KUBECONFIG="${kubeconfig}" oc get events -n openshift-authentication \
+            --field-selector=type=Warning --sort-by=.lastTimestamp \
+            -o custom-columns='TIME:.lastTimestamp,REASON:.reason,OBJECT:.involvedObject.name,MESSAGE:.message' \
+            --no-headers 2>/dev/null || true
+          return 1
+        }
+
         configure_cluster() {
           local kubeconfig="$1"
           local idp_name="$2"
           local htpasswd_file="$3"
+          local deployment_generation_before
+
+          deployment_generation_before=$(KUBECONFIG="${kubeconfig}" oc get deployment/oauth-openshift \
+            -n openshift-authentication -o jsonpath='{.metadata.generation}' 2>/dev/null || true)
+          if ! [[ "${deployment_generation_before}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: could not read the current OAuth deployment generation"
+            return 1
+          fi
 
           configured_idps=$(KUBECONFIG="${kubeconfig}" oc get oauth cluster \
             -o jsonpath='{range .spec.identityProviders[*]}{.name}{"\n"}{end}')
@@ -135,10 +222,9 @@ spec:
             fi
           fi
 
-          KUBECONFIG="${kubeconfig}" oc rollout status \
-            deployment/oauth-openshift \
-            -n openshift-authentication \
-            --timeout=600s
+          # rollout status can succeed against the old deployment before the authentication operator
+          # has observed the OAuth change and created the updated OAuth server pods.
+          wait_for_oauth_rollout "${kubeconfig}" "${idp_name}" "${deployment_generation_before}"
         }
 
         wait_for_admin_access "${SOURCE_ADMIN_KUBECONFIG}" source
@@ -158,6 +244,9 @@ spec:
           echo "HTPasswd diagnostics for ${idp_name} (hash/password values redacted):"
           KUBECONFIG="${admin_kubeconfig}" oc get oauth cluster \
             -o jsonpath='{range .spec.identityProviders[*]}{.name}{" type="}{.type}{" secret="}{.htpasswd.fileData.name}{"\n"}{end}' || true
+          echo "Authentication operator conditions:"
+          KUBECONFIG="${admin_kubeconfig}" oc get co authentication \
+            -o jsonpath='{range .status.conditions[*]}{.type}{"="}{.status}{" reason="}{.reason}{" message="}{.message}{"\n"}{end}' || true
 
           encoded=$(KUBECONFIG="${admin_kubeconfig}" oc get secret "${idp_name}" \
             -n openshift-config -o jsonpath='{.data.htpasswd}' 2>/dev/null || true)
