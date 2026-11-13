@@ -43,6 +43,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        umask 077
 
         WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
         HTPASSWD_DIR="${WORKSPACE_PATH}/.htpasswd"
@@ -77,6 +78,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        umask 077
 
         WORKSPACE_PATH="$(workspaces.shared-workspace.path)"
         HTPASSWD_DIR="${WORKSPACE_PATH}/.htpasswd"
