@@ -60,6 +60,9 @@ spec:
         password = os.environ["PASSWORD"].encode()
         # Match the working MTA-QE Tekton/Jenkins implementation.
         hashed = bcrypt.hashpw(password, bcrypt.gensalt()).decode().replace("$2b$", "$2y$")
+        if not bcrypt.checkpw(password, hashed.encode()):
+            raise SystemExit("Generated HTPasswd hash failed its local password self-check")
+        print(f"Generated bcrypt entry metadata: prefix={hashed[:4]}, hash_length={len(hashed)}")
         line = f"{username}:{hashed}\n"
         output = Path("$(workspaces.shared-workspace.path)/.htpasswd")
         (output / "source").write_text(line)
@@ -146,10 +149,87 @@ spec:
         configure_cluster "${TARGET_ADMIN_KUBECONFIG}" \
           "htpasswd-tgt" "${HTPASSWD_DIR}/target"
 
+        diagnose_htpasswd_auth() {
+          local admin_kubeconfig="$1"
+          local idp_name="$2"
+          local htpasswd_file="$3"
+          local encoded secret_match hash_summary="" ready_replicas pods pod
+
+          echo "HTPasswd diagnostics for ${idp_name} (hash/password values redacted):"
+          KUBECONFIG="${admin_kubeconfig}" oc get oauth cluster \
+            -o jsonpath='{range .spec.identityProviders[*]}{.name}{" type="}{.type}{" secret="}{.htpasswd.fileData.name}{"\n"}{end}' || true
+
+          encoded=$(KUBECONFIG="${admin_kubeconfig}" oc get secret "${idp_name}" \
+            -n openshift-config -o jsonpath='{.data.htpasswd}' 2>/dev/null || true)
+          if [ -z "${encoded}" ]; then
+            echo "HTPasswd secret/key missing: secret=${idp_name} key=htpasswd"
+          else
+            if printf '%s' "${encoded}" | base64 -d 2>/dev/null | cmp -s - "${htpasswd_file}"; then
+              secret_match=true
+            else
+              secret_match=false
+            fi
+            echo "Secret matches generated HTPasswd file: ${secret_match}"
+
+            if hash_summary=$(printf '%s' "${encoded}" | base64 -d 2>/dev/null | awk \
+              -F: -v expected_user="${TEST_USERNAME}" '
+                NF >= 2 {
+                  entries++
+                  if ($1 == expected_user) {
+                    matches++
+                    hash = $2
+                    prefix = substr(hash, 1, 4)
+                    cost = substr(hash, 5, 2)
+                    if ((prefix == "$2a$" || prefix == "$2b$" || prefix == "$2y$") &&
+                        substr(hash, 7, 1) == "$" && length(hash) == 60) {
+                      valid = 1
+                    }
+                  }
+                }
+                END {
+                  if (matches != 1 || valid != 1) {
+                    printf "entries=%d expected_user_entries=%d bcrypt_format_valid=false\n", entries, matches
+                    exit 1
+                  }
+                  printf "entries=%d expected_user_entries=%d bcrypt_prefix=%s cost=%s hash_length=60 bcrypt_format_valid=true\n", entries, matches, prefix, cost
+                }
+              '); then
+              echo "HTPasswd entry check: ${hash_summary}"
+            else
+              echo "HTPasswd entry check failed or secret data could not be decoded"
+              [ -n "${hash_summary}" ] && echo "HTPasswd entry check: ${hash_summary}"
+            fi
+          fi
+
+          ready_replicas=$(KUBECONFIG="${admin_kubeconfig}" oc get deployment/oauth-openshift \
+            -n openshift-authentication -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || true)
+          echo "OAuth deployment ready replicas: ${ready_replicas:-unknown}"
+          pods=$(KUBECONFIG="${admin_kubeconfig}" oc get pods -n openshift-authentication \
+            -l app=oauth-openshift -o name 2>/dev/null || true)
+          if [ -z "${pods}" ]; then
+            echo "No OAuth pods were found for log collection"
+          else
+            while IFS= read -r pod; do
+              [ -n "${pod}" ] || continue
+              echo "Recent OAuth logs for ${pod} (last 10m, max 100 lines):"
+              KUBECONFIG="${admin_kubeconfig}" oc logs "${pod}" \
+                -n openshift-authentication --all-containers=true --since=10m --tail=100 || true
+            done <<< "${pods}"
+          fi
+
+          echo "Recent warning events in openshift-authentication:"
+          KUBECONFIG="${admin_kubeconfig}" oc get events -n openshift-authentication \
+            --field-selector=type=Warning --sort-by=.lastTimestamp \
+            -o custom-columns='TIME:.lastTimestamp,REASON:.reason,OBJECT:.involvedObject.name,MESSAGE:.message' \
+            --no-headers 2>/dev/null || true
+        }
+
         login_nonadmin() {
           local admin_kubeconfig="$1"
           local output_kubeconfig="$2"
           local context_name="$3"
+          local idp_name="$4"
+          local htpasswd_file="$5"
           local api_server
           local login_log="${output_kubeconfig}.login.log"
           local login_succeeded=false
@@ -181,12 +261,7 @@ spec:
 
           if [ "${login_succeeded}" != true ]; then
             echo "ERROR: non-admin login failed for ${context_name}"
-            echo "OAuth identity providers:"
-            KUBECONFIG="${admin_kubeconfig}" oc get oauth cluster \
-              -o jsonpath='{range .spec.identityProviders[*]}{.name}{" type="}{.type}{"\n"}{end}' || true
-            echo "OAuth pods:"
-            KUBECONFIG="${admin_kubeconfig}" oc get pods \
-              -n openshift-authentication -l app=oauth-openshift -o wide || true
+            diagnose_htpasswd_auth "${admin_kubeconfig}" "${idp_name}" "${htpasswd_file}"
             exit 1
           fi
 
@@ -196,9 +271,11 @@ spec:
         }
 
         login_nonadmin "${SOURCE_ADMIN_KUBECONFIG}" \
-          "${SOURCE_DEV_KUBECONFIG}" "$(params.sourceNonAdminContext)"
+          "${SOURCE_DEV_KUBECONFIG}" "$(params.sourceNonAdminContext)" \
+          "htpasswd-src" "${HTPASSWD_DIR}/source"
         login_nonadmin "${TARGET_ADMIN_KUBECONFIG}" \
-          "${TARGET_DEV_KUBECONFIG}" "$(params.targetNonAdminContext)"
+          "${TARGET_DEV_KUBECONFIG}" "$(params.targetNonAdminContext)" \
+          "htpasswd-tgt" "${HTPASSWD_DIR}/target"
 
         test -s "${MERGED_KUBECONFIG}"
         MERGED_WITH_DEV_KUBECONFIG="${MERGED_KUBECONFIG}.tmp"

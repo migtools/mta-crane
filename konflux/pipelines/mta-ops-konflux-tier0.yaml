@@ -39,7 +39,8 @@ spec:
       default: ""
     - name: deleteDelaySeconds
       type: string
-      default: "60"
+      default: "3600"
+      description: Seconds to retain provisioned clusters before cleanup for debugging.
     - name: ocpctlUrl
       type: string
       default: https://ocpctl.apps.cnv2.engineering.redhat.com/api/v1
