@@ -116,11 +116,17 @@ spec:
           local status_response
           local status
           local attempt
+          local remaining
+          local max_time
+          local sleep_time
 
           for attempt in 1 2 3 4 5; do
+            remaining=$((status_deadline - SECONDS))
+            [ "${remaining}" -gt 0 ] || return 1
+            max_time=30
+            [ "${remaining}" -lt "${max_time}" ] && max_time="${remaining}"
             if status_response=$(curl -fsS --insecure \
-              --connect-timeout 10 --max-time 30 \
-              --retry 2 --retry-delay 3 --retry-all-errors \
+              --connect-timeout 10 --max-time "${max_time}" \
               -H "Authorization: Bearer ${OCPCTL_API_KEY}" \
               "$(params.ocpctlUrl)/clusters/${cluster_id}" 2>/tmp/ocpctl-status-error); then
               status=$(printf '%s' "${status_response}" | \
@@ -132,19 +138,27 @@ spec:
               fi
             fi
 
-            echo "${role} status query attempt ${attempt}/5 failed; retrying in 10s"
+            echo "${role} status query attempt ${attempt}/5 failed" >&2
             if [ -s /tmp/ocpctl-status-error ]; then
-              echo "$(tr '\n' ' ' < /tmp/ocpctl-status-error)"
+              tr '\n' ' ' < /tmp/ocpctl-status-error >&2
+              echo >&2
             fi
-            sleep 10
+            remaining=$((status_deadline - SECONDS))
+            [ "${remaining}" -gt 0 ] || return 1
+            sleep_time=10
+            [ "${remaining}" -lt "${sleep_time}" ] && sleep_time="${remaining}"
+            echo "${role} retrying status query in ${sleep_time}s" >&2
+            sleep "${sleep_time}"
           done
 
           return 1
         }
 
-        elapsed=0
+        status_started_at=${SECONDS}
+        status_deadline=$((status_started_at + 5400))
         status=""
-        while [ "${elapsed}" -lt 5400 ]; do
+        while [ "${SECONDS}" -lt "${status_deadline}" ]; do
+          elapsed=$((SECONDS - status_started_at))
           if ! status=$(fetch_cluster_status); then
             echo "${role} status endpoint unavailable; continuing to wait"
             status="UNKNOWN"
@@ -155,8 +169,11 @@ spec:
             echo "ERROR: ${role} cluster reached terminal status ${status}"
             exit 1
           fi
-          sleep 30
-          elapsed=$((elapsed + 30))
+          remaining=$((status_deadline - SECONDS))
+          [ "${remaining}" -gt 0 ] || break
+          sleep_time=30
+          [ "${remaining}" -lt "${sleep_time}" ] && sleep_time="${remaining}"
+          sleep "${sleep_time}"
         done
 
         echo "ERROR: ${role} cluster did not become READY within 5400 seconds"
