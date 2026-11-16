@@ -69,7 +69,7 @@ spec:
         done
         registry_config_arg=()
         if [ "${#registry_files[@]}" -gt 0 ]; then
-          python3 - "${registry_files[@]}" > /tmp/merged-registry-config.json <<'PY'
+          python3 "${registry_files[@]}" > /tmp/merged-registry-config.json <<'PY'
         import json
         import sys
 
