@@ -16,8 +16,8 @@ spec:
       default: registry-pull-secrets
     - name: stageImageRetrySeconds
       type: string
-      default: "60"
-      description: Maximum time to wait for stage images to become pullable.
+      default: "3600"
+      description: Maximum time in seconds to wait for stage images to become pullable (1 hour).
     - name: stageImageRetryIntervalSeconds
       type: string
       default: "10"
