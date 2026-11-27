@@ -12,8 +12,8 @@ spec:
     - name: artGroup
       value: ""
   contexts:
-    - name: component_mta-8-3-mta-ops
-      description: Run MTA-Ops Tier 0 when the MTA-Ops component is built
+    - name: disabled
+      description: Trigger MTA-Ops Tier 0 explicitly after both component releases are ready
   resolverRef:
     resolver: git
     resourceKind: pipelinerun

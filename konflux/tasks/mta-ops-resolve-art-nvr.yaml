@@ -59,6 +59,12 @@ spec:
           exit 0
         }
 
+        if ! printf '%s' "${response}" | jq -e \
+          'type == "object" and (.builds | type == "array")' >/dev/null 2>&1; then
+          echo "ART lookup skipped: API response was not Build History JSON; NVRs remain unknown"
+          exit 0
+        fi
+
         resolve_nvr() {
           local label="$1"
           local art_name="$2"
